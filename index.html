@@ -3331,5 +3331,257 @@ function initStaffModalButtons() {
 initStaffModalButtons();
 		 
     </script>
+
+
+<script id="lian-ui-polish-v103">
+(function () {
+  'use strict';
+  if (window.__LIAN_UI_POLISH_V103__) return;
+  window.__LIAN_UI_POLISH_V103__ = true;
+
+  const STYLE_ID = 'lian-ui-polish-v103-style';
+  function installStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      /* V103: UI polish only - tidak menyentuh data/sync/report logic */
+      #loginScreen img[src*="Untitled-1"],
+      #loginScreen img[alt*="Logo"] {
+        height: 84px !important;
+        max-height: 84px !important;
+      }
+
+      #sidebar {
+        width: 14.25rem !important;
+        max-width: 14.25rem !important;
+      }
+      #sidebar nav {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+      }
+      #sidebar > div > p {
+        display: none !important;
+      }
+      #sidebar > hr {
+        margin-top: 0.75rem !important;
+        margin-bottom: 0.75rem !important;
+      }
+      #sidebar button span {
+        font-size: inherit !important;
+      }
+
+      @media (max-width: 420px) {
+        #sidebar {
+          width: 13.75rem !important;
+          max-width: 13.75rem !important;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const PALETTE = [
+    { a: '#2563eb', b: '#06b6d4', bg: '#dbeafe', text: '#1d4ed8', border: '#bfdbfe' },
+    { a: '#7c3aed', b: '#ec4899', bg: '#f3e8ff', text: '#6d28d9', border: '#ddd6fe' },
+    { a: '#ea580c', b: '#f59e0b', bg: '#ffedd5', text: '#c2410c', border: '#fed7aa' },
+    { a: '#059669', b: '#14b8a6', bg: '#d1fae5', text: '#047857', border: '#a7f3d0' },
+    { a: '#dc2626', b: '#f97316', bg: '#fee2e2', text: '#b91c1c', border: '#fecaca' },
+    { a: '#0891b2', b: '#3b82f6', bg: '#cffafe', text: '#0e7490', border: '#a5f3fc' },
+    { a: '#4f46e5', b: '#8b5cf6', bg: '#e0e7ff', text: '#4338ca', border: '#c7d2fe' },
+    { a: '#65a30d', b: '#16a34a', bg: '#ecfccb', text: '#4d7c0f', border: '#d9f99d' }
+  ];
+
+  function cleanText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function colorForCategory(name) {
+    const text = cleanText(name || 'Tanpa kategori').toLowerCase();
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = ((hash << 5) - hash) + text.charCodeAt(i);
+      hash |= 0;
+    }
+    return PALETTE[Math.abs(hash) % PALETTE.length];
+  }
+
+  window.__lianCategoryColorForName = colorForCategory;
+
+  function applyIconBoxColor(box, color) {
+    if (!box || !color) return;
+    box.style.setProperty('background', `linear-gradient(135deg, ${color.a}, ${color.b})`, 'important');
+    box.style.setProperty('color', '#ffffff', 'important');
+    box.style.setProperty('box-shadow', `0 10px 22px ${color.a}24`, 'important');
+    box.querySelectorAll('svg, i').forEach(icon => {
+      icon.style.setProperty('color', '#ffffff', 'important');
+      icon.style.setProperty('stroke', 'currentColor', 'important');
+    });
+  }
+
+  function applyBadgeColor(badge, color) {
+    if (!badge || !color) return;
+    badge.style.setProperty('background', color.bg, 'important');
+    badge.style.setProperty('border-color', color.border, 'important');
+    badge.style.setProperty('color', color.text, 'important');
+    badge.querySelectorAll('svg, i').forEach(icon => {
+      icon.style.setProperty('color', color.text, 'important');
+      icon.style.setProperty('stroke', 'currentColor', 'important');
+    });
+  }
+
+  function findCategoryNameInItemCard(card) {
+    const candidates = Array.from(card.querySelectorAll('span.truncate'));
+    const categoryText = candidates.find(el => {
+      const parent = el.closest('span.inline-flex');
+      return parent && parent.querySelector('[data-lucide="folder"], svg, i');
+    });
+    return cleanText(categoryText?.textContent || 'Tanpa kategori');
+  }
+
+  function applyItemColors() {
+    const list = document.getElementById('itemsList');
+    if (!list) return;
+
+    Array.from(list.children || []).forEach(card => {
+      if (!(card instanceof HTMLElement)) return;
+      const categoryName = findCategoryNameInItemCard(card);
+      const color = colorForCategory(categoryName);
+
+      const leftBar = card.querySelector('.absolute.inset-y-0.left-0');
+      if (leftBar) leftBar.style.setProperty('background', `linear-gradient(to bottom, ${color.a}, ${color.b})`, 'important');
+
+      const iconBox = card.querySelector('.w-9.h-9.rounded-xl');
+      applyIconBoxColor(iconBox, color);
+
+      const categoryBadge = Array.from(card.querySelectorAll('span.inline-flex')).find(el => {
+        const text = cleanText(el.textContent || '');
+        return text === categoryName || text.includes(categoryName);
+      });
+      applyBadgeColor(categoryBadge, color);
+    });
+  }
+
+  function applyCategoryColors() {
+    const list = document.getElementById('categoriesList');
+    if (!list) return;
+
+    Array.from(list.children || []).forEach(card => {
+      if (!(card instanceof HTMLElement)) return;
+      const title = card.querySelector('h3');
+      const categoryName = cleanText(title?.textContent || 'Kategori');
+      const color = colorForCategory(categoryName);
+
+      const leftBar = card.querySelector('.absolute.inset-y-0.left-0');
+      if (leftBar) leftBar.style.setProperty('background', `linear-gradient(to bottom, ${color.a}, ${color.b})`, 'important');
+
+      const iconBox = card.querySelector('.category-open-btn .w-10.h-10.rounded-2xl');
+      applyIconBoxColor(iconBox, color);
+
+      const countBadge = title?.parentElement?.querySelector('span.inline-flex');
+      applyBadgeColor(countBadge, color);
+
+      card.querySelectorAll('.category-dropdown-content .w-6.h-6.rounded-xl').forEach(pill => {
+        pill.style.setProperty('background', color.bg, 'important');
+        pill.style.setProperty('border', `1px solid ${color.border}`, 'important');
+        pill.style.setProperty('color', color.text, 'important');
+      });
+    });
+  }
+
+  function applyCategoryColorsEverywhere() {
+    applyItemColors();
+    applyCategoryColors();
+  }
+
+  function wrapRenderFunction(name) {
+    const original = window[name];
+    if (typeof original !== 'function' || original.__lianColorWrappedV103) return;
+    const wrapped = function (...args) {
+      const result = original.apply(this, args);
+      requestAnimationFrame(() => applyCategoryColorsEverywhere());
+      return result;
+    };
+    wrapped.__lianColorWrappedV103 = true;
+    window[name] = wrapped;
+    try { window.eval(`${name} = window.${name}`); } catch (_) {}
+  }
+
+  function getActiveViewId() {
+    const views = Array.from(document.querySelectorAll('[id$="View"]'));
+    const active = views.find(el => !el.classList.contains('hidden'));
+    return active?.id || 'dashboardView';
+  }
+
+  function viewToHash(viewId) {
+    return '#' + String(viewId || 'dashboardView').replace(/View$/, '');
+  }
+
+  function installViewHistory() {
+    const original = window.switchView;
+    if (typeof original !== 'function' || original.__lianHistoryWrappedV103) return;
+
+    const wrapped = function (viewId, options = {}) {
+      const result = original.call(this, viewId);
+      try {
+        if (!options || options.skipHistory !== true) {
+          const current = history.state && history.state.lianViewId;
+          if (current !== viewId) {
+            history.pushState({ lianViewId: viewId }, '', viewToHash(viewId));
+          }
+        }
+      } catch (_) {}
+      requestAnimationFrame(() => applyCategoryColorsEverywhere());
+      return result;
+    };
+
+    wrapped.__lianHistoryWrappedV103 = true;
+    wrapped.__originalSwitchViewV103 = original;
+    window.switchView = wrapped;
+    try { window.eval('switchView = window.switchView'); } catch (_) {}
+
+    try {
+      const initialView = getActiveViewId();
+      if (!history.state || !history.state.lianViewId) {
+        history.replaceState({ lianViewId: initialView }, '', viewToHash(initialView));
+      }
+    } catch (_) {}
+
+    window.addEventListener('popstate', function (event) {
+      const targetView = event.state?.lianViewId || 'dashboardView';
+      const baseSwitch = window.switchView.__originalSwitchViewV103 || original;
+      baseSwitch.call(window, targetView);
+      requestAnimationFrame(() => applyCategoryColorsEverywhere());
+    });
+  }
+
+  function boot() {
+    installStyle();
+    installViewHistory();
+    wrapRenderFunction('renderItems');
+    wrapRenderFunction('renderCategories');
+    setTimeout(applyCategoryColorsEverywhere, 250);
+    setTimeout(applyCategoryColorsEverywhere, 1000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+
+  let applyTimer = null;
+  const observer = new MutationObserver(() => {
+    clearTimeout(applyTimer);
+    applyTimer = setTimeout(applyCategoryColorsEverywhere, 120);
+  });
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  console.log('✅ Lian UI polish v103 loaded');
+})();
+</script>
+
 </body>
 </html>
