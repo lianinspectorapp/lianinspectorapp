@@ -1874,10 +1874,10 @@ async function restoreOfflineDraft(options = {}) {
 
             if (!fileId && !isLocalData) {
                 return `
-                    <button type="button" data-report-photo-preview="true" data-report-photo-label="${safeAttrLabel}" data-report-photo-open-url="${safeOpenUrl}" style="width:100%; min-height: 180px; border: 1px dashed #cbd5e1; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: #f8fafc; color: #1e40af; font-size: 12px; font-weight: 850; text-align: center; padding: 12px; break-inside: avoid; text-decoration:none; cursor:pointer;">
+                    <a href="${safeOpenUrl}" target="_blank" rel="noopener" style="min-height: 180px; border: 1px dashed #cbd5e1; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: #f8fafc; color: #1e40af; font-size: 12px; font-weight: 850; text-align: center; padding: 12px; break-inside: avoid; text-decoration:none;">
                         <span style="font-size:26px;margin-right:8px;">📷</span>
-                        <span>${safeLabel}<br><span style="font-weight:650;color:#64748b;">Klik untuk preview</span></span>
-                    </button>
+                        <span>${safeLabel}<br><span style="font-weight:650;color:#64748b;">Buka foto asli</span></span>
+                    </a>
                 `;
             }
 
@@ -1887,78 +1887,24 @@ async function restoreOfflineDraft(options = {}) {
 
             return `
                 <div class="report-photo-card" style="background:#ffffff; border:1px solid #dbeafe; border-radius:16px; overflow:hidden; box-shadow:0 8px 22px rgba(15,23,42,.08); break-inside:avoid; page-break-inside:avoid;">
-                    <button type="button" data-report-photo-preview="true" data-report-photo-label="${safeAttrLabel}" data-report-photo-open-url="${safeOpenUrl}" style="display:block;width:100%;border:0;padding:0;margin:0;text-decoration:none;color:inherit;position:relative;background:#eff6ff;cursor:pointer;text-align:left;">
-                        <img ${imgAttr} alt="${safeAttrLabel}" style="display:${isLocalData ? 'block' : 'none'}; width:100%; height:auto; min-height:0; max-height:none; aspect-ratio:auto; object-fit:contain; object-position:center center; background:#e5e7eb;">
-                        <div data-photo-loading="true" style="display:${isLocalData ? 'none' : 'flex'}; min-height:160px; align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
+                    <a href="${safeOpenUrl}" target="_blank" rel="noopener" style="display:block;text-decoration:none;color:inherit;position:relative;background:#eff6ff;">
+                        <img ${imgAttr} alt="${safeAttrLabel}" style="display:${isLocalData ? 'block' : 'none'}; width:100%; height:240px; object-fit:cover; background:#e5e7eb;">
+                        <div data-photo-loading="true" style="display:${isLocalData ? 'none' : 'flex'}; min-height:240px; align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
                             <span style="font-size:30px;">📷</span>
                             <span>Memuat foto...</span>
                             <span style="font-size:11px;font-weight:650;color:#64748b;">${safeLabel}</span>
                         </div>
-                        <div data-photo-fallback="true" style="display:none; min-height:160px; align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
+                        <div data-photo-fallback="true" style="display:none; min-height:240px; align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
                             <span style="font-size:30px;">📷</span>
                             <span>${safeLabel}</span>
-                            <span style="font-size:11px;font-weight:650;color:#64748b;">Foto belum termuat untuk preview</span>
+                            <span style="font-size:11px;font-weight:650;color:#64748b;">Klik untuk buka foto asli</span>
                         </div>
-                    </button>
+                    </a>
                     <div style="padding:10px 12px;border-top:1px solid #e5e7eb;line-height:1.35;font-size:12px;">
                         ${captionHtml}
                     </div>
                 </div>
             `;
-        }
-
-
-        function openReportPhotoPreviewOverlay(src = '', label = '') {
-            const existing = document.getElementById('reportPhotoPreviewOverlay');
-            if (existing) existing.remove();
-
-            const safeLabel = escapeHtml(label || 'Foto dokumentasi');
-            const safeSrc = escapeAttr(src || '');
-            const overlay = document.createElement('div');
-            overlay.id = 'reportPhotoPreviewOverlay';
-            overlay.className = 'fixed inset-0 z-[1000002] bg-black/90 flex items-center justify-center p-3';
-
-            overlay.innerHTML = `
-                <div class="relative w-full h-full flex items-center justify-center">
-                    <button type="button" data-close-report-photo-preview="true" class="absolute top-3 right-3 z-10 w-10 h-10 rounded-full bg-white text-slate-900 font-black shadow-lg flex items-center justify-center text-xl">×</button>
-                    ${safeSrc
-                        ? `<img src="${safeSrc}" alt="${safeLabel}" class="max-w-full max-h-full object-contain rounded-xl shadow-2xl bg-black" />`
-                        : `<div class="bg-white rounded-2xl p-5 max-w-sm text-center shadow-2xl">
-                            <div class="text-4xl mb-3">📷</div>
-                            <div class="font-black text-slate-900 mb-1">Foto belum siap</div>
-                            <div class="text-sm text-slate-600">Tunggu foto selesai termuat, lalu klik lagi untuk preview.</div>
-                        </div>`}
-                </div>
-            `;
-
-            const close = () => overlay.remove();
-            overlay.addEventListener('click', (event) => {
-                if (event.target === overlay) close();
-            });
-            overlay.querySelector('[data-close-report-photo-preview="true"]')?.addEventListener('click', close);
-            overlay.querySelector('img')?.addEventListener('click', event => event.stopPropagation());
-            document.body.appendChild(overlay);
-        }
-
-        function installReportPhotoPreviewHandlers() {
-            const reportContent = document.getElementById('reportContent');
-            if (!reportContent) return;
-
-            reportContent.querySelectorAll('[data-report-photo-preview="true"]').forEach(button => {
-                if (button.dataset.previewHandlerInstalled === 'true') return;
-                button.dataset.previewHandlerInstalled = 'true';
-                button.addEventListener('click', event => {
-                    event.preventDefault();
-                    event.stopPropagation();
-
-                    const img = button.querySelector('img');
-                    const imgSrc = img && img.style.display !== 'none'
-                        ? (img.currentSrc || img.src || '')
-                        : '';
-                    const label = button.dataset.reportPhotoLabel || img?.alt || 'Foto dokumentasi';
-                    openReportPhotoPreviewOverlay(imgSrc, label);
-                });
-            });
         }
 
         function loadImageElement(src) {
@@ -3682,7 +3628,7 @@ async function restoreOfflineDraft(options = {}) {
             const photoSectionHtml = photoRows.length > 0 ? `
                 <div style="margin-top:18px; break-inside:avoid;">
                     <div style="background:#1e3a8a; color:white; padding:12px 16px; border-radius:16px; font-size:16px; font-weight:950; text-align:center; margin-bottom:12px;">📸 Foto Dokumentasi</div>
-                    <div class="report-photo-grid" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px;">
+                    <div class="report-photo-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">
                         ${photoRows.map((row, idx) => buildReportPhotoHtml(row.photo, idx, row.caption)).join('')}
                     </div>
                 </div>` : `<div style="background:#f8fafc; border:1px dashed #cbd5e1; border-radius:16px; padding:18px; text-align:center; color:#64748b; font-size:13px; font-weight:800;">📷 Belum ada foto dokumentasi pada laporan ini.</div>`;
@@ -3714,58 +3660,6 @@ async function restoreOfflineDraft(options = {}) {
                         .report-v25 .report-field-row { grid-template-columns:105px 1fr !important; font-size:12px !important; }
                         .report-v25 .report-guarantee-badge { padding:12px !important; }
                         .report-v25 .report-point-row { grid-template-columns:minmax(0,1fr) 18px !important; }
-
-                        /* V101: khusus report HP, indikator dan foto tetap horizontal. */
-                        .report-v25 .report-badges {
-                            grid-template-columns:repeat(3,minmax(0,1fr)) !important;
-                            gap:6px !important;
-                        }
-                        .report-v25 .report-guarantee-badge {
-                            padding:8px 4px !important;
-                            border-radius:12px !important;
-                            min-height:106px !important;
-                        }
-                        .report-v25 .report-guarantee-badge .report-remove-badge {
-                            top:5px !important;
-                            right:5px !important;
-                            width:18px !important;
-                            height:18px !important;
-                            line-height:18px !important;
-                            font-size:11px !important;
-                        }
-                        .report-v25 .report-guarantee-badge > div:first-of-type {
-                            width:34px !important;
-                            height:34px !important;
-                            font-size:17px !important;
-                            margin-bottom:6px !important;
-                        }
-                        .report-v25 .report-guarantee-badge > div:nth-of-type(2) {
-                            font-size:9.2px !important;
-                            line-height:1.15 !important;
-                            padding:0 12px !important;
-                        }
-                        .report-v25 .report-guarantee-badge > div:nth-of-type(3) {
-                            font-size:7.8px !important;
-                            line-height:1.18 !important;
-                            margin-top:4px !important;
-                        }
-                        .report-v25 .report-photo-grid {
-                            grid-template-columns:repeat(2,minmax(0,1fr)) !important;
-                            gap:8px !important;
-                        }
-                        .report-v25 .report-photo-card img {
-                            width:100% !important;
-                            height:auto !important;
-                            min-height:0 !important;
-                            max-height:none !important;
-                            aspect-ratio:auto !important;
-                            object-fit:contain !important;
-                            object-position:center center !important;
-                        }
-                        .report-v25 .report-photo-card [data-photo-loading="true"],
-                        .report-v25 .report-photo-card [data-photo-fallback="true"] {
-                            min-height:120px !important;
-                        }
                     }
                 </style>
 
@@ -3834,7 +3728,6 @@ async function restoreOfflineDraft(options = {}) {
             document.body.style.overflow = 'hidden';
 
             attachReportEventListeners();
-            installReportPhotoPreviewHandlers();
             lucide.createIcons();
             setTimeout(() => hydrateReportDrivePhotos(), 80);
             showToast('✓ Laporan ditampilkan!');
@@ -6623,231 +6516,272 @@ console.log('✅ inspection.js v30 batch photo report loaded');
     }
 })();
 
-
 // =============================================================
-// V100 - REPORT SNAPSHOT PRESERVE + EDIT RESAVE ORPHAN CLEANUP
+// V102 - Targeted mobile fixes: safe progress count, yellow category bars,
+//       clean final grade card without raw score block
 // =============================================================
-// Tujuan kecil dan terarah:
-// 1) Report lama yang belum diedit tetap menampilkan nama item/kategori snapshot
-//    jika master item/kategori sudah berubah atau dihapus.
-// 2) Jika user membuka report lama via Edit lalu Submit ulang, item/kategori yang
-//    sudah tidak ada di master aktif tidak ikut disimpan kembali.
-(function () {
-    'use strict';
+(function installLianV102MobileProgressAndGradeFix(){
+    if (window.__LIAN_V102_MOBILE_PROGRESS_GRADE_FIX_INSTALLED) return;
+    window.__LIAN_V102_MOBILE_PROGRESS_GRADE_FIX_INSTALLED = true;
 
-    const TAG = '[v100-report-snapshot]';
-    const SNAPSHOT_RE = /\[LIAN_REPORT_SNAPSHOT:({[\s\S]*?})\]/i;
+    const TAG = '[v102 mobile progress + grade]';
+    const VALID_STATUS = new Set(['good', 'warning', 'bad']);
 
-    function normV100(value) {
-        return String(value ?? '').trim().toLowerCase();
+    function isValidInspectionStatusV102(value) {
+        return VALID_STATUS.has(String(value || '').trim());
     }
 
-    function isReportMetaRowV100(itemName) {
-        const name = normV100(itemName);
-        return name.startsWith('dokumen -') ||
-            name.startsWith('aksesori -') ||
-            name.startsWith('data kendaraan -');
+    function getActiveSheetItemsV102() {
+        return Array.isArray(sheetItems) ? sheetItems : [];
     }
 
-    function normalizeStatusV100(value) {
-        const text = normV100(value);
-        if (['good', 'baik', 'hijau', 'ok', 'aman'].includes(text)) return 'good';
-        if (['warning', 'perlu', 'perhatian', 'perlu perhatian', 'kuning', 'catatan'].includes(text)) return 'warning';
-        if (['bad', 'rusak', 'merah', 'parah'].includes(text)) return 'bad';
-        return '';
+    function getCategoryKeyV102(category, index = 0) {
+        return String(category?.id || category?.name || index).replace(/[^a-zA-Z0-9_-]/g, '_');
     }
 
-    function getMasterItemsV100() {
-        try { return Array.isArray(sheetItems) ? sheetItems : []; }
-        catch (_) { return []; }
+    function installStyleV102() {
+        if (document.getElementById('lian-v102-mobile-progress-grade-style')) return;
+
+        const style = document.createElement('style');
+        style.id = 'lian-v102-mobile-progress-grade-style';
+        style.textContent = `
+            /* Bar progress kategori dibuat kuning agar kontras di card biru. */
+            [data-category-progress-fill] {
+                background: linear-gradient(90deg, #facc15 0%, #f59e0b 100%) !important;
+                background-image: linear-gradient(90deg, #facc15 0%, #f59e0b 100%) !important;
+            }
+
+            /* Final grade card: raw score/sistem disembunyikan, card dibuat aman untuk layar sempit. */
+            #reportEditableFinalGradeCard {
+                overflow: hidden !important;
+            }
+            #reportEditableFinalGradeCard #reportEditableScoreBar {
+                max-width: 100% !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+            #reportEditableFinalGradeCard [data-lian-raw-score-block="true"] {
+                display: none !important;
+            }
+
+            @media (max-width: 720px) {
+                #reportEditableFinalGradeCard {
+                    padding: 14px !important;
+                }
+                #reportEditableFinalGradeCard [data-lian-grade-main-grid="true"] {
+                    grid-template-columns: minmax(0, 1fr) minmax(112px, .62fr) !important;
+                    gap: 10px !important;
+                    align-items: stretch !important;
+                }
+                #reportEditableFinalGradeCard [data-lian-grade-score-card="true"] {
+                    min-width: 0 !important;
+                    overflow: hidden !important;
+                    padding: 12px !important;
+                }
+                #reportEditableFinalGradeCard [data-lian-grade-bar-wrap="true"] {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    overflow: hidden !important;
+                    box-sizing: border-box !important;
+                }
+                #reportEditableScorePercent {
+                    font-size: 42px !important;
+                    min-width: 0 !important;
+                }
+                #reportEditableScoreGrade {
+                    font-size: 52px !important;
+                    min-width: 42px !important;
+                }
+            }
+        `;
+        document.head.appendChild(style);
     }
 
-    function getMasterCategoriesV100() {
-        try { return Array.isArray(sheetCategories) ? sheetCategories : []; }
-        catch (_) { return []; }
-    }
-
-    function findMasterItemV100({ id = '', name = '' } = {}) {
-        const itemId = String(id || '').trim();
-        const itemName = normV100(name);
-        return getMasterItemsV100().find(item =>
-            (itemId && String(item.id || '') === itemId) ||
-            (itemName && normV100(item.name || item.item_name || item.title) === itemName)
-        ) || null;
-    }
-
-    function extractSnapshotFromNoteV100(note = '') {
-        const text = String(note || '');
-        const match = text.match(SNAPSHOT_RE);
-        if (!match || !match[1]) return { snapshot: {}, cleanNote: text };
-
-        let snapshot = {};
+    function patchCategoryProgressBarColorV102(root = document) {
         try {
-            snapshot = JSON.parse(match[1]) || {};
-        } catch (_) {
-            snapshot = {};
+            root.querySelectorAll?.('[data-category-progress-fill]')?.forEach(fill => {
+                fill.classList.remove('from-green-500', 'to-emerald-600', 'from-blue-500', 'to-cyan-600');
+                fill.style.setProperty('background', 'linear-gradient(90deg, #facc15 0%, #f59e0b 100%)', 'important');
+                fill.style.setProperty('background-image', 'linear-gradient(90deg, #facc15 0%, #f59e0b 100%)', 'important');
+            });
+        } catch (err) {
+            console.warn(TAG, 'patch warna progress kategori gagal:', err?.message || err);
         }
-
-        const cleanNote = text.replace(SNAPSHOT_RE, '')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-
-        return { snapshot, cleanNote };
     }
 
-    function getDetailSnapshotV100(detail = {}) {
-        const noteInfo = extractSnapshotFromNoteV100(detail.note || '');
-        const master = findMasterItemV100({ id: detail.item_id || detail.itemId, name: detail.item_name || detail.itemName });
-        const itemName = detail.item_name || detail.itemName || noteInfo.snapshot.itemName || noteInfo.snapshot.item_name || master?.name || '';
-
-        return {
-            itemName,
-            category:
-                detail.category || detail.category_name || detail.categoryName ||
-                noteInfo.snapshot.category || noteInfo.snapshot.categoryName ||
-                master?.category ||
-                'Kategori lama',
-            critical_level:
-                detail.critical_level || detail.criticalLevel ||
-                noteInfo.snapshot.critical_level || noteInfo.snapshot.criticalLevel ||
-                master?.critical_level || master?.criticalLevel ||
-                'Low',
-            cleanNote: noteInfo.cleanNote
-        };
+    function getInspectionCategoryProgressV102(items = []) {
+        const list = Array.isArray(items) ? items : [];
+        const total = list.length;
+        const completed = list.filter(item => isValidInspectionStatusV102(inspectionItemsData?.[item.id])).length;
+        const safeCompleted = Math.min(completed, total);
+        const percentage = total > 0 ? Math.round((safeCompleted / total) * 100) : 0;
+        return { total, completed: safeCompleted, percentage };
     }
 
-    // Bersihkan metadata snapshot dari catatan yang tampil, tetapi tetap ambil kategori/item lamanya.
     try {
-        const previousParseDetailNoteToMeta = typeof parseDetailNoteToMeta === 'function'
-            ? parseDetailNoteToMeta
-            : null;
+        getInspectionCategoryProgress = getInspectionCategoryProgressV102;
+    } catch (err) {
+        console.warn(TAG, 'override getInspectionCategoryProgress gagal:', err?.message || err);
+    }
 
-        parseDetailNoteToMeta = function (note = '') {
-            const { snapshot, cleanNote } = extractSnapshotFromNoteV100(note);
-            const base = previousParseDetailNoteToMeta
-                ? previousParseDetailNoteToMeta(cleanNote)
-                : { notes: cleanNote };
+    try {
+        const previousUpdateProgressBar = typeof updateProgressBar === 'function' ? updateProgressBar : null;
+        updateProgressBar = function updateProgressBarV102() {
+            const items = getActiveSheetItemsV102();
+            const total = items.length;
+            const completed = items.filter(item => isValidInspectionStatusV102(inspectionItemsData?.[item.id])).length;
+            const safeCompleted = Math.min(completed, total);
+            const percentage = total > 0 ? Math.round((safeCompleted / total) * 100) : 0;
 
-            return {
-                ...(base || {}),
-                notes: String((base || {}).notes ?? cleanNote).trim(),
-                itemName: snapshot.itemName || snapshot.item_name || (base || {}).itemName,
-                category: snapshot.category || snapshot.categoryName || (base || {}).category,
-                critical_level: snapshot.critical_level || snapshot.criticalLevel || (base || {}).critical_level
-            };
+            const progressBar = document.getElementById('progressBar');
+            if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, percentage))}%`;
+
+            const progressText = document.getElementById('progressText');
+            if (progressText) progressText.textContent = `${safeCompleted} / ${total}`;
+
+            try {
+                (sheetCategories || []).forEach((cat, index) => {
+                    const safeCategoryKey = getCategoryKeyV102(cat, index);
+                    const itemsInCat = items.filter(item => item.category === cat.name);
+                    const catProgress = getInspectionCategoryProgressV102(itemsInCat);
+
+                    const fill = document.querySelector(`[data-category-progress-fill="${safeCategoryKey}"]`);
+                    const text = document.querySelector(`[data-category-progress-text="${safeCategoryKey}"]`);
+                    if (fill) {
+                        fill.style.width = `${Math.max(0, Math.min(100, catProgress.percentage))}%`;
+                        fill.style.setProperty('background', 'linear-gradient(90deg, #facc15 0%, #f59e0b 100%)', 'important');
+                        fill.style.setProperty('background-image', 'linear-gradient(90deg, #facc15 0%, #f59e0b 100%)', 'important');
+                    }
+                    if (text) text.textContent = `${catProgress.completed}/${catProgress.total}`;
+                });
+            } catch (err) {
+                console.warn('⚠️ Update progress kategori gagal:', err);
+            }
+
+            patchCategoryProgressBarColorV102();
         };
     } catch (err) {
-        console.warn(TAG, 'parseDetailNoteToMeta patch dilewati:', err?.message || err);
+        console.warn(TAG, 'override updateProgressBar gagal:', err?.message || err);
     }
 
-    // Perkuat pembacaan detail report: kalau master item/kategori sudah dihapus,
-    // report tidak lagi jatuh ke kategori "Lainnya", tetapi memakai snapshot lama.
-    try {
-        const previousBuildItemsDataFromInspectionDetails = typeof buildItemsDataFromInspectionDetails === 'function'
-            ? buildItemsDataFromInspectionDetails
-            : null;
+    function cleanEditableFinalGradeCardV102() {
+        const card = document.getElementById('reportEditableFinalGradeCard');
+        const percentEl = document.getElementById('reportEditableScorePercent');
+        const barEl = document.getElementById('reportEditableScoreBar');
+        if (!card || !percentEl) return;
 
-        buildItemsDataFromInspectionDetails = function (details = []) {
-            const result = previousBuildItemsDataFromInspectionDetails
-                ? (previousBuildItemsDataFromInspectionDetails.apply(this, arguments) || {})
-                : {};
-
-            (details || []).forEach((detail, index) => {
-                const itemName = String(detail.item_name || detail.itemName || '').trim();
-                if (!itemName || isReportMetaRowV100(itemName)) return;
-
-                const status = normalizeStatusV100(detail.status);
-                if (!status) return;
-
-                const snapshot = getDetailSnapshotV100(detail);
-                const master = findMasterItemV100({ id: detail.item_id || detail.itemId, name: itemName });
-                const itemId = String(master?.id || detail.item_id || detail.itemId || itemName || `detail_${index}`).trim();
-                if (!itemId) return;
-
-                const metaKey = itemId + '_data';
-                const oldMeta = result[metaKey] || {};
-                result[itemId] = result[itemId] || status;
-                result[metaKey] = {
-                    ...oldMeta,
-                    itemName: oldMeta.itemName || oldMeta.item_name || snapshot.itemName || itemName,
-                    item_name: oldMeta.item_name || oldMeta.itemName || snapshot.itemName || itemName,
-                    category: oldMeta.category || oldMeta.categoryName || snapshot.category || 'Kategori lama',
-                    categoryName: oldMeta.categoryName || oldMeta.category || snapshot.category || 'Kategori lama',
-                    critical_level: oldMeta.critical_level || oldMeta.criticalLevel || snapshot.critical_level || 'Low'
-                };
+        try {
+            const scoreLine = percentEl.parentElement;
+            const scoreColumn = scoreLine?.parentElement;
+            const scoreHeaderRow = scoreColumn?.parentElement;
+            const rawBlock = Array.from(scoreHeaderRow?.children || []).find(child => {
+                if (child === scoreColumn) return false;
+                const text = String(child.textContent || '').toLowerCase();
+                return text.includes('sistem') || text.includes('raw score');
             });
 
-            return result;
-        };
-    } catch (err) {
-        console.warn(TAG, 'buildItemsDataFromInspectionDetails patch dilewati:', err?.message || err);
-    }
-
-    function getVisibleMasterItemIdSetV100() {
-        const items = getMasterItemsV100();
-        const categories = getMasterCategoriesV100();
-        const categoryNames = new Set(categories.map(cat => normV100(cat.name || cat.category || cat.title)).filter(Boolean));
-
-        const visibleItems = categoryNames.size > 0
-            ? items.filter(item => categoryNames.has(normV100(item.category)))
-            : items;
-
-        return new Set(visibleItems.map(item => String(item.id || '').trim()).filter(Boolean));
-    }
-
-    function filterItemsDataForEditResaveV100(itemsData = {}) {
-        const allowedIds = getVisibleMasterItemIdSetV100();
-        if (allowedIds.size === 0) return itemsData || {};
-
-        const filtered = {};
-        Object.entries(itemsData || {}).forEach(([key, value]) => {
-            if (String(key).endsWith('_data')) return;
-            if (!allowedIds.has(String(key))) return;
-
-            filtered[key] = value;
-            if (itemsData[key + '_data']) {
-                filtered[key + '_data'] = itemsData[key + '_data'];
+            if (rawBlock) {
+                rawBlock.dataset.lianRawScoreBlock = 'true';
+                rawBlock.style.setProperty('display', 'none', 'important');
             }
-        });
-        return filtered;
+
+            if (scoreHeaderRow) {
+                scoreHeaderRow.style.setProperty('display', 'block', 'important');
+                scoreHeaderRow.style.setProperty('min-width', '0', 'important');
+                scoreHeaderRow.style.setProperty('overflow', 'visible', 'important');
+            }
+
+            const scoreCard = scoreHeaderRow?.parentElement;
+            if (scoreCard) {
+                scoreCard.dataset.lianGradeScoreCard = 'true';
+                scoreCard.style.setProperty('min-width', '0', 'important');
+                scoreCard.style.setProperty('overflow', 'hidden', 'important');
+                scoreCard.style.setProperty('box-sizing', 'border-box', 'important');
+            }
+
+            const mainGrid = scoreCard?.parentElement;
+            if (mainGrid) {
+                mainGrid.dataset.lianGradeMainGrid = 'true';
+                mainGrid.style.setProperty('grid-template-columns', 'minmax(0, 1.1fr) minmax(112px, .68fr)', 'important');
+                mainGrid.style.setProperty('gap', '10px', 'important');
+                mainGrid.style.setProperty('align-items', 'stretch', 'important');
+            }
+
+            const barWrap = barEl?.parentElement;
+            if (barWrap) {
+                barWrap.dataset.lianGradeBarWrap = 'true';
+                barWrap.style.setProperty('width', '100%', 'important');
+                barWrap.style.setProperty('max-width', '100%', 'important');
+                barWrap.style.setProperty('min-width', '0', 'important');
+                barWrap.style.setProperty('overflow', 'hidden', 'important');
+                barWrap.style.setProperty('box-sizing', 'border-box', 'important');
+            }
+            if (barEl) {
+                const numeric = Number(String(percentEl.textContent || '').replace(/[^0-9]/g, '')) || 0;
+                barEl.style.width = `${Math.max(0, Math.min(100, numeric))}%`;
+                barEl.style.setProperty('max-width', '100%', 'important');
+                barEl.style.setProperty('min-width', '0', 'important');
+                barEl.style.setProperty('box-sizing', 'border-box', 'important');
+            }
+        } catch (err) {
+            console.warn(TAG, 'cleanup final grade gagal:', err?.message || err);
+        }
     }
 
-    // Saat report lama diedit dan disubmit ulang, buang item/kategori yang sudah tidak ada
-    // dari master aktif, supaya laporan terbaru tidak lagi membawa "Kategori lama/Lainnya".
+    function scheduleReportCleanupV102() {
+        [80, 220, 420, 760, 1200, 1800].forEach(delay => {
+            setTimeout(() => {
+                cleanEditableFinalGradeCardV102();
+                patchCategoryProgressBarColorV102(document);
+            }, delay);
+        });
+    }
+
     try {
-        const previousSubmitInspectionData = typeof submitInspectionData === 'function'
-            ? submitInspectionData
-            : null;
-
-        if (previousSubmitInspectionData) {
-            submitInspectionData = async function (record) {
-                if (record && (record._editMode || record.existingInspectionId || record.editingInspectionId)) {
-                    const beforeCount = Object.entries(record._itemsData || {})
-                        .filter(([key, value]) => !String(key).endsWith('_data') && normalizeStatusV100(value))
-                        .length;
-
-                    record._itemsData = filterItemsDataForEditResaveV100(record._itemsData || {});
-
-                    const afterCount = Object.entries(record._itemsData || {})
-                        .filter(([key, value]) => !String(key).endsWith('_data') && normalizeStatusV100(value))
-                        .length;
-
-                    if (beforeCount !== afterCount) {
-                        console.log(TAG, 'item/kategori lama dibersihkan saat edit-save', { beforeCount, afterCount });
-                    }
-                }
-
-                return previousSubmitInspectionData.apply(this, arguments);
+        const previousGenerateAndShowReport = typeof generateAndShowReport === 'function' ? generateAndShowReport : null;
+        if (previousGenerateAndShowReport && !window.__LIAN_V102_GENERATE_HOOKED) {
+            generateAndShowReport = function generateAndShowReportV102() {
+                const result = previousGenerateAndShowReport.apply(this, arguments);
+                scheduleReportCleanupV102();
+                return result;
             };
+            window.__LIAN_V102_GENERATE_HOOKED = true;
         }
     } catch (err) {
-        console.warn(TAG, 'submitInspectionData patch dilewati:', err?.message || err);
+        console.warn(TAG, 'hook generateAndShowReport gagal:', err?.message || err);
     }
 
-    window.LianReportSnapshotV100 = {
-        extractSnapshotFromNote: extractSnapshotFromNoteV100,
-        filterItemsDataForEditResave: filterItemsDataForEditResaveV100
+    try {
+        if (window.LianReportEditableGradeV61) {
+            const previousInject = window.LianReportEditableGradeV61.inject;
+            if (typeof previousInject === 'function' && !window.LianReportEditableGradeV61.__v102InjectWrapped) {
+                window.LianReportEditableGradeV61.inject = function injectV102() {
+                    const result = previousInject.apply(this, arguments);
+                    scheduleReportCleanupV102();
+                    return result;
+                };
+                window.LianReportEditableGradeV61.__v102InjectWrapped = true;
+            }
+        }
+    } catch (err) {
+        console.warn(TAG, 'wrap grade inject gagal:', err?.message || err);
+    }
+
+    installStyleV102();
+    setTimeout(() => {
+        try {
+            if (typeof updateProgressBar === 'function') updateProgressBar();
+            patchCategoryProgressBarColorV102(document);
+            cleanEditableFinalGradeCardV102();
+        } catch (_) {}
+    }, 300);
+
+    window.LianV102MobileProgressGradeFix = {
+        updateProgressBar,
+        getInspectionCategoryProgress: getInspectionCategoryProgressV102,
+        cleanEditableFinalGradeCard: cleanEditableFinalGradeCardV102,
+        patchCategoryProgressBarColor: patchCategoryProgressBarColorV102
     };
 
-    console.log('✅ inspection.js v100 report snapshot + edit cleanup loaded');
+    console.log('✅ inspection.js v102 mobile progress + final grade cleanup loaded');
 })();
