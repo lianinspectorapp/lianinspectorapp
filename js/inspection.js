@@ -1930,7 +1930,7 @@ async function restoreOfflineDraft(options = {}) {
             canvas.height = image.naturalWidth;
             const ctx = canvas.getContext('2d');
             ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate(-Math.PI / 2);
+            ctx.rotate(Math.PI / 2);
             ctx.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2);
             return canvas.toDataURL('image/jpeg', 0.86);
         }
