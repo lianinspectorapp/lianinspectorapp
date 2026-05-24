@@ -1906,10 +1906,20 @@ async function restoreOfflineDraft(options = {}) {
             img.addEventListener('click', (event) => event.stopPropagation());
             box.addEventListener('click', (event) => event.stopPropagation());
 
-            // V117: khusus preview foto report, tambahkan pinch zoom dua jari tanpa mengubah UI V114.
+            // V118: tambahan khusus dari V117 — pinch zoom tetap, plus drag saat sudah zoom.
+            // Tidak mengubah UI V114: tombol close tetap sama dan tanpa tombol zoom tambahan.
             let reportPreviewScale = 1;
             let reportPreviewStartScale = 1;
             let reportPreviewStartDistance = 0;
+            let reportPreviewStartMid = { x: 0, y: 0 };
+            let reportPreviewTranslateX = 0;
+            let reportPreviewTranslateY = 0;
+            let reportPreviewStartTranslateX = 0;
+            let reportPreviewStartTranslateY = 0;
+            let reportPreviewDragStartX = 0;
+            let reportPreviewDragStartY = 0;
+            let reportPreviewDragging = false;
+
             const clampReportPreviewScale = (value) => Math.max(1, Math.min(4, Number(value) || 1));
             const getTouchDistance = (touches) => {
                 if (!touches || touches.length < 2) return 0;
@@ -1917,14 +1927,53 @@ async function restoreOfflineDraft(options = {}) {
                 const dy = touches[0].clientY - touches[1].clientY;
                 return Math.sqrt((dx * dx) + (dy * dy));
             };
+            const getTouchMidpoint = (touches) => ({
+                x: (touches[0].clientX + touches[1].clientX) / 2,
+                y: (touches[0].clientY + touches[1].clientY) / 2
+            });
+            const setReportPreviewTransformOrigin = (point) => {
+                const rect = img.getBoundingClientRect();
+                const originX = Math.max(0, Math.min(rect.width, point.x - rect.left));
+                const originY = Math.max(0, Math.min(rect.height, point.y - rect.top));
+                img.style.transformOrigin = `${originX}px ${originY}px`;
+            };
             const applyReportPreviewZoom = () => {
-                img.style.transform = reportPreviewScale > 1 ? `scale(${reportPreviewScale})` : 'scale(1)';
+                if (reportPreviewScale <= 1) {
+                    img.style.transform = 'translate3d(0px, 0px, 0) scale(1)';
+                    return;
+                }
+                img.style.transform = `translate3d(${reportPreviewTranslateX}px, ${reportPreviewTranslateY}px, 0) scale(${reportPreviewScale})`;
+            };
+            const resetReportPreviewIfNeeded = () => {
+                if (reportPreviewScale <= 1.02) {
+                    reportPreviewScale = 1;
+                    reportPreviewTranslateX = 0;
+                    reportPreviewTranslateY = 0;
+                    img.style.transition = 'transform .12s ease-out';
+                    applyReportPreviewZoom();
+                }
             };
 
             img.addEventListener('touchstart', (event) => {
                 if (event.touches.length === 2) {
                     reportPreviewStartDistance = getTouchDistance(event.touches);
                     reportPreviewStartScale = reportPreviewScale;
+                    reportPreviewStartMid = getTouchMidpoint(event.touches);
+                    reportPreviewStartTranslateX = reportPreviewTranslateX;
+                    reportPreviewStartTranslateY = reportPreviewTranslateY;
+                    setReportPreviewTransformOrigin(reportPreviewStartMid);
+                    img.style.transition = 'none';
+                    reportPreviewDragging = false;
+                    event.preventDefault();
+                    return;
+                }
+
+                if (event.touches.length === 1 && reportPreviewScale > 1) {
+                    reportPreviewDragging = true;
+                    reportPreviewDragStartX = event.touches[0].clientX;
+                    reportPreviewDragStartY = event.touches[0].clientY;
+                    reportPreviewStartTranslateX = reportPreviewTranslateX;
+                    reportPreviewStartTranslateY = reportPreviewTranslateY;
                     img.style.transition = 'none';
                     event.preventDefault();
                 }
@@ -1933,19 +1982,38 @@ async function restoreOfflineDraft(options = {}) {
             img.addEventListener('touchmove', (event) => {
                 if (event.touches.length === 2 && reportPreviewStartDistance > 0) {
                     const currentDistance = getTouchDistance(event.touches);
+                    const currentMid = getTouchMidpoint(event.touches);
                     reportPreviewScale = clampReportPreviewScale(reportPreviewStartScale * (currentDistance / reportPreviewStartDistance));
+                    reportPreviewTranslateX = reportPreviewStartTranslateX + (currentMid.x - reportPreviewStartMid.x);
+                    reportPreviewTranslateY = reportPreviewStartTranslateY + (currentMid.y - reportPreviewStartMid.y);
+                    applyReportPreviewZoom();
+                    event.preventDefault();
+                    return;
+                }
+
+                if (event.touches.length === 1 && reportPreviewDragging && reportPreviewScale > 1) {
+                    reportPreviewTranslateX = reportPreviewStartTranslateX + (event.touches[0].clientX - reportPreviewDragStartX);
+                    reportPreviewTranslateY = reportPreviewStartTranslateY + (event.touches[0].clientY - reportPreviewDragStartY);
                     applyReportPreviewZoom();
                     event.preventDefault();
                 }
             }, { passive: false });
 
-            img.addEventListener('touchend', () => {
-                if (reportPreviewScale <= 1.02) {
-                    reportPreviewScale = 1;
-                    img.style.transition = 'transform .12s ease-out';
-                    applyReportPreviewZoom();
+            img.addEventListener('touchend', (event) => {
+                if (event.touches.length === 0) {
+                    reportPreviewStartDistance = 0;
+                    reportPreviewDragging = false;
+                    resetReportPreviewIfNeeded();
+                    return;
                 }
-                reportPreviewStartDistance = 0;
+
+                if (event.touches.length === 1 && reportPreviewScale > 1) {
+                    reportPreviewDragging = true;
+                    reportPreviewDragStartX = event.touches[0].clientX;
+                    reportPreviewDragStartY = event.touches[0].clientY;
+                    reportPreviewStartTranslateX = reportPreviewTranslateX;
+                    reportPreviewStartTranslateY = reportPreviewTranslateY;
+                }
             });
 
             closeBtn.addEventListener('click', () => overlay.remove());
