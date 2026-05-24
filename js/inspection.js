@@ -1889,8 +1889,8 @@ async function restoreOfflineDraft(options = {}) {
                 <div class="report-photo-card" style="background:#ffffff; border:1px solid #dbeafe; border-radius:16px; overflow:hidden; box-shadow:0 8px 22px rgba(15,23,42,.08); break-inside:avoid; page-break-inside:avoid;">
                     <a href="${safeOpenUrl}" target="_blank" rel="noopener" style="display:block;text-decoration:none;color:inherit;position:relative;background:#eff6ff;">
                         <img ${imgAttr} alt="${safeAttrLabel}" style="display:${isLocalData ? 'block' : 'none'}; width:100%; height:240px; object-fit:cover; background:#e5e7eb;">
-                        <div data-photo-loading="true" style="display:${isLocalData ? 'none' : 'flex'}; min-height:240px; align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
-                            <span style="font-size:30px;">📷</span>
+                        <div data-photo-loading="true" style="display:${isLocalData ? 'none' : 'flex'}; min-height:240px; align-items:center; justify-content:center; flex-direction:column; gap:9px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
+                            <span class="lian-report-photo-spinner" aria-hidden="true" style="width:34px;height:34px;border-radius:999px;border:4px solid #bfdbfe;border-top-color:#1d4ed8;display:inline-block;animation:lianReportPhotoSpin .75s linear infinite;"></span>
                             <span>Memuat foto...</span>
                             <span style="font-size:11px;font-weight:650;color:#64748b;">${safeLabel}</span>
                         </div>
@@ -2302,7 +2302,10 @@ async function restoreOfflineDraft(options = {}) {
             previewDiv.dataset.tempPhoto = 'true';
             previewDiv.innerHTML = `
                 <img src="${previewUrl}" alt="Foto lokal" class="w-full h-full object-cover">
-                <div class="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[10px] text-center py-1 font-semibold">Mengupload...</div>
+                <div class="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[10px] text-center py-1 font-semibold flex items-center justify-center gap-1">
+                    <span class="inline-block w-3 h-3 rounded-full border-2 border-white/50 border-t-white animate-spin"></span>
+                    <span>Mengupload...</span>
+                </div>
             `;
             galleryDiv.prepend(previewDiv);
 
@@ -3560,12 +3563,16 @@ async function restoreOfflineDraft(options = {}) {
                     </div>
                 </div>`;
 
-            const guaranteeBadge = (icon, title, subtitle) => `
-                <div class="report-guarantee-badge" style="position:relative; min-width:0; border:1px solid #bfdbfe; border-radius:16px; padding:13px 12px; background:#ffffff; text-align:center; break-inside:avoid;">
-                    <button type="button" class="report-remove-badge" onclick="this.closest('.report-guarantee-badge').remove()" style="position:absolute; top:8px; right:8px; width:22px; height:22px; border-radius:999px; border:0; background:#fee2e2; color:#dc2626; font-weight:1000; cursor:pointer; line-height:22px;">×</button>
-                    <div style="width:44px; height:44px; border-radius:999px; border:2px solid #1d4ed8; display:flex; align-items:center; justify-content:center; margin:0 auto 8px; font-size:22px; background:#eff6ff;">${icon}</div>
-                    <div style="font-size:12px; font-weight:1000; color:#0f172a; line-height:1.25; padding:0 18px;">${escapeHtml(title)}</div>
-                    <div style="font-size:9.5px; font-weight:750; color:#64748b; margin-top:5px; line-height:1.25;">${escapeHtml(subtitle)}</div>
+            const reportGuaranteeImages = {
+                tabrak: 'report-badge-tabrak.jpg',
+                banjir: 'report-badge-banjir.jpg',
+                rangka: 'report-badge-rangka-mesin.jpg'
+            };
+
+            const guaranteeBadge = (imageSrc, title) => `
+                <div class="report-guarantee-badge" style="position:relative; min-width:0; border:1px solid #bfdbfe; border-radius:16px; padding:8px; background:#ffffff; text-align:center; break-inside:avoid; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+                    <button type="button" class="report-remove-badge" onclick="this.closest('.report-guarantee-badge').remove()" style="position:absolute; top:8px; right:8px; width:22px; height:22px; border-radius:999px; border:0; background:#fee2e2; color:#dc2626; font-weight:1000; cursor:pointer; line-height:22px; z-index:2;">×</button>
+                    <img src="${imageSrc}" alt="${escapeHtml(title)}" style="width:100%; max-width:170px; height:auto; display:block; margin:0 auto; object-fit:contain;" onerror="this.closest('.report-guarantee-badge').innerHTML='<div style=&quot;padding:16px 12px; font-size:12px; font-weight:900; color:#0f172a;&quot;>'+this.alt+'</div>'">
                 </div>`;
 
             const findingsHtml = importantFindings.length > 0 ? `
@@ -3636,6 +3643,7 @@ async function restoreOfflineDraft(options = {}) {
             const html = `
             <div class="report-v25" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; color:#0f172a; max-width:980px; margin:0 auto;">
                 <style>
+                    @keyframes lianReportPhotoSpin { to { transform: rotate(360deg); } }
                     @media print {
                         .report-remove-badge, .report-no-print { display:none !important; }
                         .report-v25 { max-width:100% !important; }
@@ -3646,7 +3654,6 @@ async function restoreOfflineDraft(options = {}) {
                         .report-v25 .report-client-bar,
                         .report-v25 .report-vehicle-grid,
                         .report-v25 .report-completeness-grid,
-                        .report-v25 .report-badges,
                         .report-v25 .report-category-grid,
                         .report-v25 .report-findings-grid,
                         .report-v25 .report-point-grid,
@@ -3658,7 +3665,9 @@ async function restoreOfflineDraft(options = {}) {
                         .report-v25 .report-vehicle-grid > div { border-right:none !important; border-bottom:1px solid #0f172a22; padding:14px !important; }
                         .report-v25 .report-vehicle-grid > div:last-child { border-bottom:none !important; }
                         .report-v25 .report-field-row { grid-template-columns:105px 1fr !important; font-size:12px !important; }
-                        .report-v25 .report-guarantee-badge { padding:12px !important; }
+                        .report-v25 .report-badges { grid-template-columns:repeat(3,minmax(0,1fr)) !important; gap:6px !important; }
+                        .report-v25 .report-guarantee-badge { padding:5px !important; border-radius:12px !important; }
+                        .report-v25 .report-guarantee-badge img { width:100% !important; max-width:100% !important; height:auto !important; object-fit:contain !important; }
                         .report-v25 .report-point-row { grid-template-columns:minmax(0,1fr) 18px !important; }
                     }
                 </style>
@@ -3685,11 +3694,11 @@ async function restoreOfflineDraft(options = {}) {
 
                 ${completenessReportHtml}
 
-                <div style="border:1px solid #cbd5e1; border-radius:18px; padding:14px; margin-bottom:18px; background:white; break-inside:avoid;">
-                    <div class="report-badges" style="display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px;">
-                        ${guaranteeBadge('🛡️', 'Bebas Tabrak', 'Tidak terindikasi tabrakan besar')}
-                        ${guaranteeBadge('🌊', 'Bebas Banjir', 'Tidak terindikasi terendam banjir')}
-                        ${guaranteeBadge('🔎', 'Nomor Rangka & Mesin Asli', 'Identitas fisik kendaraan sesuai')}
+                <div class="report-guarantee-wrap" style="border:1px solid #cbd5e1; border-radius:18px; padding:12px; margin-bottom:18px; background:white; break-inside:avoid;">
+                    <div class="report-badges" style="display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;">
+                        ${guaranteeBadge(reportGuaranteeImages.tabrak, 'Bebas Tabrak')}
+                        ${guaranteeBadge(reportGuaranteeImages.banjir, 'Bebas Banjir')}
+                        ${guaranteeBadge(reportGuaranteeImages.rangka, 'Nomor Rangka & Mesin Asli')}
                     </div>
                 </div>
 
@@ -6785,3 +6794,604 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 
     console.log('✅ inspection.js v102 mobile progress + final grade cleanup loaded');
 })();
+
+
+
+// =============================================================
+// V108 - SAFE CLEANUP: snapshot text hidden + mobile grade/progress cleanup
+// =============================================================
+// Catatan:
+// - Tidak mengubah alur submit, sync, edit, delete, upload foto, atau database.
+// - Patch ini hanya merapikan tampilan laporan/progress dan menyembunyikan metadata internal.
+(function installLianV108SafeReportUiCleanup() {
+    if (window.__LIAN_V108_SAFE_REPORT_UI_CLEANUP_INSTALLED) return;
+    window.__LIAN_V108_SAFE_REPORT_UI_CLEANUP_INSTALLED = true;
+
+    const TAG = '[v108-safe-report-ui]';
+    const SNAPSHOT_TEXT_RE = /[\s\[(]*LIAN_REPORT_SNAPSHOT:\{[\s\S]*?\}[\s\])]*/gi;
+
+    function cleanSnapshotTextV108(value) {
+        return String(value ?? '')
+            .replace(SNAPSHOT_TEXT_RE, ' ')
+            .replace(/\(\s*\)/g, '')
+            .replace(/\[\s*\]/g, '')
+            .replace(/\s+([—–-])\s+/g, ' $1 ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+    }
+
+    function escapeV108(value) {
+        if (typeof escapeHtml === 'function') return escapeHtml(value);
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function clampPercentV108(value) {
+        const num = Number(String(value ?? '').replace(/[^0-9]/g, ''));
+        if (!Number.isFinite(num)) return 0;
+        return Math.max(0, Math.min(100, Math.round(num)));
+    }
+
+    function gradeFromScoreV108(score) {
+        const n = Number(score || 0);
+        if (n >= 90) return 'A';
+        if (n >= 80) return 'B';
+        if (n >= 70) return 'C';
+        if (n >= 60) return 'D';
+        return 'E';
+    }
+
+    function gradeLabelV108(grade) {
+        const g = String(grade || '').toUpperCase();
+        if (g === 'A') return 'Sangat layak';
+        if (g === 'B') return 'Layak';
+        if (g === 'C') return 'Cukup layak';
+        if (g === 'D') return 'Berisiko';
+        return 'Tidak layak';
+    }
+
+    function gradeColorV108(grade) {
+        const g = String(grade || '').toUpperCase();
+        if (g === 'A') return '#16a34a';
+        if (g === 'B') return '#22c55e';
+        if (g === 'C') return '#f59e0b';
+        if (g === 'D') return '#f97316';
+        return '#ef4444';
+    }
+
+    function normalizeGradeV108(value, score = 0) {
+        const text = String(value || '').toUpperCase();
+        const match = text.match(/[A-E]/);
+        return match ? match[0] : gradeFromScoreV108(score);
+    }
+
+    function isCompletedStatusV108(value) {
+        return value === 'good' || value === 'warning' || value === 'bad';
+    }
+
+    function applyCategoryProgressColorV108() {
+        try {
+            document.querySelectorAll('[data-category-progress-fill]').forEach(fill => {
+                fill.classList.remove('from-green-500', 'to-emerald-600', 'from-blue-500', 'to-cyan-600');
+                fill.style.background = 'linear-gradient(90deg, #facc15, #f59e0b)';
+            });
+        } catch (_) {}
+    }
+
+    function updateCategoryProgressTextV108() {
+        try {
+            (sheetCategories || []).forEach((cat, index) => {
+                const safeCategoryKey = String(cat.id || cat.name || index).replace(/[^a-zA-Z0-9_-]/g, '_');
+                const itemsInCat = (sheetItems || []).filter(item => item.category === cat.name);
+                const total = itemsInCat.length;
+                const completed = itemsInCat.filter(item => isCompletedStatusV108(inspectionItemsData?.[item.id])).length;
+                const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+                const fill = document.querySelector(`[data-category-progress-fill="${safeCategoryKey}"]`);
+                const text = document.querySelector(`[data-category-progress-text="${safeCategoryKey}"]`);
+
+                if (fill) {
+                    fill.style.width = `${percentage}%`;
+                    fill.style.background = 'linear-gradient(90deg, #facc15, #f59e0b)';
+                }
+                if (text) text.textContent = `${completed}/${total}`;
+            });
+        } catch (err) {
+            console.warn(TAG, 'update kategori progress dilewati:', err?.message || err);
+        }
+    }
+
+    // Fix progress 14/13: hanya hitung item resmi dari sheetItems, bukan metadata/string lain.
+    try {
+        const previousUpdateProgressBar = typeof updateProgressBar === 'function' ? updateProgressBar : null;
+        updateProgressBar = function () {
+            const total = (sheetItems || []).length;
+            const completed = (sheetItems || []).filter(item => isCompletedStatusV108(inspectionItemsData?.[item.id])).length;
+            const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, percentage))}%`;
+            if (progressText) progressText.textContent = `${completed} / ${total}`;
+
+            updateCategoryProgressTextV108();
+            applyCategoryProgressColorV108();
+        };
+        updateProgressBar.__previousUpdateProgressBarV108 = previousUpdateProgressBar;
+    } catch (err) {
+        console.warn(TAG, 'patch updateProgressBar gagal:', err?.message || err);
+    }
+
+    // Setelah kategori dirender, paksa warna progress kategori menjadi kuning/oranye.
+    try {
+        const previousRenderInspectionItems = typeof renderInspectionItems === 'function' ? renderInspectionItems : null;
+        if (previousRenderInspectionItems) {
+            renderInspectionItems = function () {
+                const result = previousRenderInspectionItems.apply(this, arguments);
+                setTimeout(() => {
+                    try {
+                        updateProgressBar();
+                        applyCategoryProgressColorV108();
+                    } catch (_) {}
+                }, 0);
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch renderInspectionItems gagal:', err?.message || err);
+    }
+
+    // Bersihkan metadata snapshot dari parser note agar tidak muncul di item, temuan, poin, dan caption.
+    try {
+        const previousParseDetailNoteToMeta = typeof parseDetailNoteToMeta === 'function' ? parseDetailNoteToMeta : null;
+        parseDetailNoteToMeta = function (note = '') {
+            const cleanNote = cleanSnapshotTextV108(note);
+            const base = previousParseDetailNoteToMeta
+                ? previousParseDetailNoteToMeta.call(this, cleanNote)
+                : { notes: cleanNote };
+
+            ['notes', 'selectedDamage', 'itemName', 'item_name', 'category', 'categoryName', 'critical_level'].forEach(key => {
+                if (base && base[key] !== undefined) base[key] = cleanSnapshotTextV108(base[key]);
+            });
+
+            return base || { notes: cleanNote };
+        };
+    } catch (err) {
+        console.warn(TAG, 'patch parseDetailNoteToMeta gagal:', err?.message || err);
+    }
+
+    try {
+        const previousSplitInspectionCaption = typeof splitInspectionCaption === 'function' ? splitInspectionCaption : null;
+        if (previousSplitInspectionCaption) {
+            splitInspectionCaption = function (caption = '', fallback = '') {
+                return previousSplitInspectionCaption.call(
+                    this,
+                    cleanSnapshotTextV108(caption),
+                    cleanSnapshotTextV108(fallback)
+                );
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch splitInspectionCaption gagal:', err?.message || err);
+    }
+
+    try {
+        const previousBuildCaptionHtml = typeof buildCaptionHtml === 'function' ? buildCaptionHtml : null;
+        if (previousBuildCaptionHtml) {
+            buildCaptionHtml = function (caption = '', fallback = '') {
+                return previousBuildCaptionHtml.call(
+                    this,
+                    cleanSnapshotTextV108(caption),
+                    cleanSnapshotTextV108(fallback)
+                );
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch buildCaptionHtml gagal:', err?.message || err);
+    }
+
+    function sanitizeReportSnapshotDomV108() {
+        const root = document.getElementById('reportContent');
+        if (!root) return;
+
+        try {
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const nodes = [];
+            while (walker.nextNode()) nodes.push(walker.currentNode);
+            nodes.forEach(node => {
+                if (String(node.nodeValue || '').includes('LIAN_REPORT_SNAPSHOT')) {
+                    node.nodeValue = cleanSnapshotTextV108(node.nodeValue);
+                }
+            });
+
+            root.querySelectorAll('*').forEach(el => {
+                Array.from(el.attributes || []).forEach(attr => {
+                    if (String(attr.value || '').includes('LIAN_REPORT_SNAPSHOT')) {
+                        el.setAttribute(attr.name, cleanSnapshotTextV108(attr.value));
+                    }
+                });
+            });
+        } catch (err) {
+            console.warn(TAG, 'sanitize DOM report gagal:', err?.message || err);
+        }
+    }
+
+    function buildFinalGradeCardV108(scoreResult = {}) {
+        const score = clampPercentV108(scoreResult.finalScore ?? scoreResult.score ?? scoreResult.value ?? 0);
+        const grade = normalizeGradeV108(scoreResult.grade, score);
+        const label = scoreResult.gradeLabel || gradeLabelV108(grade);
+        const color = gradeColorV108(grade);
+
+        return `
+            <div id="reportEditableFinalGradeCard" class="report-no-print-control" style="margin-top:14px; background:linear-gradient(135deg,#ffffff 0%,#eff6ff 45%,#ecfeff 100%); border:1.5px solid #bfdbfe; border-left:7px solid ${color}; border-radius:18px; padding:16px; box-shadow:0 12px 30px rgba(15,23,42,.08); break-inside:avoid; page-break-inside:avoid; overflow:hidden;">
+                <style>
+                    @media (max-width: 420px) {
+                        #reportEditableFinalGradeCard .lian-final-grade-grid-v108 {
+                            grid-template-columns:minmax(0,1fr) minmax(92px,.72fr) !important;
+                            gap:10px !important;
+                        }
+                        #reportEditableFinalGradeCard .lian-score-panel-v108,
+                        #reportEditableFinalGradeCard .lian-grade-panel-v108 {
+                            padding:12px 10px !important;
+                            min-width:0 !important;
+                        }
+                        #reportEditableFinalGradeCard #reportEditableScorePercent {
+                            font-size:42px !important;
+                            min-width:0 !important;
+                        }
+                        #reportEditableFinalGradeCard #reportEditableScoreGrade {
+                            font-size:52px !important;
+                        }
+                    }
+                </style>
+                <div style="margin-bottom:13px;">
+                    <div style="font-size:16px; font-weight:1000; color:#0f172a; line-height:1.2;">Penilaian Akhir Mobil</div>
+                    <div style="font-size:11.5px; font-weight:750; color:#64748b; margin-top:4px; line-height:1.35;">Penilaian akhir mobil setelah dilakukan pengecekan secara keseluruhan.</div>
+                </div>
+
+                <div class="lian-final-grade-grid-v108" style="display:grid; grid-template-columns:minmax(0,1.15fr) minmax(110px,.85fr); gap:12px; align-items:stretch;">
+                    <div class="lian-score-panel-v108" style="min-width:0; background:#ffffff; border:1.5px solid #dbeafe; border-radius:16px; padding:13px; display:grid; align-content:center; overflow:hidden;">
+                        <div style="min-width:0;">
+                            <div style="font-size:11px; font-weight:950; color:#64748b; text-transform:uppercase; letter-spacing:.04em; line-height:1.35;">Persentase Grade Mobil</div>
+                            <div style="display:flex; align-items:baseline; gap:4px; margin-top:4px; min-width:0;">
+                                <span id="reportEditableScorePercent" contenteditable="true" spellcheck="false" inputmode="numeric" style="outline:none; cursor:text; color:${color}; font-size:44px; line-height:.98; font-weight:1000; letter-spacing:-1px; border-bottom:2px dashed ${color}55; min-width:58px; display:inline-block;" title="Klik untuk edit persentase">${score}</span>
+                                <span style="font-size:23px; font-weight:1000; color:${color};">%</span>
+                            </div>
+                        </div>
+                        <div style="height:9px; background:#e2e8f0; border-radius:999px; overflow:hidden; margin-top:13px; width:100%;">
+                            <div id="reportEditableScoreBar" style="height:100%; width:${score}%; max-width:100%; background:${color}; border-radius:999px; transition:.2s ease;"></div>
+                        </div>
+                    </div>
+
+                    <div class="lian-grade-panel-v108" style="min-width:0; background:#ffffff; border:2px solid ${color}; border-radius:16px; padding:13px; text-align:center; display:flex; flex-direction:column; justify-content:center; overflow:hidden;">
+                        <div style="font-size:11px; font-weight:950; color:#64748b; text-transform:uppercase; letter-spacing:.04em;">Grade</div>
+                        <div id="reportEditableScoreGrade" contenteditable="true" spellcheck="false" style="outline:none; cursor:text; color:${color}; font-size:54px; line-height:.95; font-weight:1000; border-bottom:2px dashed ${color}55; display:inline-block; align-self:center; min-width:54px;" title="Klik untuk edit grade A-E">${escapeV108(grade)}</div>
+                        <div id="reportEditableScoreLabel" style="font-size:12px; font-weight:1000; color:#0f172a; margin-top:8px; line-height:1.25;">${escapeV108(label)}</div>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    function updateLegacyStatusAkhirV108(percent, grade) {
+        const reportContent = document.getElementById('reportContent');
+        if (!reportContent) return;
+
+        const score = clampPercentV108(percent);
+        const normalizedGrade = normalizeGradeV108(grade, score);
+        const color = gradeColorV108(normalizedGrade);
+
+        try {
+            const statusRow = Array.from(reportContent.querySelectorAll('.report-field-row'))
+                .find(row => String(row.textContent || '').toLowerCase().includes('status akhir'));
+            const valueSpan = statusRow?.querySelector('span');
+            if (valueSpan) {
+                valueSpan.innerHTML = `: <b style="color:${color};">Grade ${escapeV108(normalizedGrade)} - ${escapeV108(gradeLabelV108(normalizedGrade))}</b> (${score}%)`;
+            }
+        } catch (_) {}
+    }
+
+    function refreshFinalGradeCardV108(percent, grade) {
+        const card = document.getElementById('reportEditableFinalGradeCard');
+        if (!card) return;
+
+        const score = clampPercentV108(percent);
+        const normalizedGrade = normalizeGradeV108(grade, score);
+        const color = gradeColorV108(normalizedGrade);
+
+        const percentEl = document.getElementById('reportEditableScorePercent');
+        const gradeEl = document.getElementById('reportEditableScoreGrade');
+        const labelEl = document.getElementById('reportEditableScoreLabel');
+        const barEl = document.getElementById('reportEditableScoreBar');
+        const gradePanel = card.querySelector('.lian-grade-panel-v108');
+
+        card.style.borderLeftColor = color;
+        if (percentEl) {
+            percentEl.textContent = String(score);
+            percentEl.style.color = color;
+            percentEl.style.borderBottomColor = `${color}55`;
+        }
+        const percentSymbol = percentEl?.nextElementSibling;
+        if (percentSymbol) percentSymbol.style.color = color;
+
+        if (gradeEl) {
+            gradeEl.textContent = normalizedGrade;
+            gradeEl.style.color = color;
+            gradeEl.style.borderBottomColor = `${color}55`;
+        }
+        if (gradePanel) gradePanel.style.borderColor = color;
+        if (labelEl) labelEl.textContent = gradeLabelV108(normalizedGrade);
+        if (barEl) {
+            barEl.style.width = `${Math.max(0, Math.min(100, score))}%`;
+            barEl.style.maxWidth = '100%';
+            barEl.style.background = color;
+        }
+
+        updateLegacyStatusAkhirV108(score, normalizedGrade);
+    }
+
+    function bindFinalGradeCardV108() {
+        const percentEl = document.getElementById('reportEditableScorePercent');
+        const gradeEl = document.getElementById('reportEditableScoreGrade');
+        if (!percentEl || !gradeEl || percentEl.dataset.boundV108 === 'true') return;
+
+        percentEl.dataset.boundV108 = 'true';
+        gradeEl.dataset.boundV108 = 'true';
+
+        const sanitizePercent = () => {
+            const score = clampPercentV108(percentEl.textContent);
+            const grade = normalizeGradeV108(gradeEl.textContent, score);
+            refreshFinalGradeCardV108(score, grade);
+        };
+
+        const sanitizeGrade = () => {
+            const score = clampPercentV108(percentEl.textContent);
+            const grade = normalizeGradeV108(gradeEl.textContent, score);
+            refreshFinalGradeCardV108(score, grade);
+        };
+
+        percentEl.addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                percentEl.blur();
+            }
+        });
+        gradeEl.addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                gradeEl.blur();
+            }
+        });
+
+        percentEl.addEventListener('blur', sanitizePercent);
+        gradeEl.addEventListener('blur', sanitizeGrade);
+        percentEl.addEventListener('input', () => {
+            const raw = String(percentEl.textContent || '').replace(/[^0-9]/g, '').slice(0, 3);
+            if (String(percentEl.textContent || '') !== raw) percentEl.textContent = raw;
+        });
+        gradeEl.addEventListener('input', () => {
+            const raw = String(gradeEl.textContent || '').toUpperCase().replace(/[^A-E]/g, '').slice(0, 1);
+            if (String(gradeEl.textContent || '') !== raw) gradeEl.textContent = raw;
+        });
+    }
+
+    function injectFinalGradeCardV108(scoreResult = {}) {
+        const reportContent = document.getElementById('reportContent');
+        if (!reportContent) return;
+
+        const categoryGrid = reportContent.querySelector('.report-category-grid');
+        if (!categoryGrid) return;
+
+        reportContent.querySelectorAll('#reportEditableFinalGradeCard, #reportScoreEngineBlock').forEach(el => el.remove());
+
+        categoryGrid.insertAdjacentHTML('afterend', buildFinalGradeCardV108(scoreResult));
+        bindFinalGradeCardV108();
+        sanitizeReportSnapshotDomV108();
+    }
+
+    async function reinjectCurrentReportGradeV108(inspection = {}) {
+        let scoreResult = null;
+
+        try {
+            if (window.LianInspectionScoreDisplayV62 && typeof window.LianInspectionScoreDisplayV62.getScoreForInspection === 'function') {
+                scoreResult = await window.LianInspectionScoreDisplayV62.getScoreForInspection(inspection);
+            } else if (window.LianInspectionScoreDisplayV60 && typeof window.LianInspectionScoreDisplayV60.getScoreForInspection === 'function') {
+                scoreResult = await window.LianInspectionScoreDisplayV60.getScoreForInspection(inspection);
+            }
+        } catch (err) {
+            console.warn(TAG, 'ambil score gagal:', err?.message || err);
+        }
+
+        if (!scoreResult) {
+            const fallback = Number(inspection?.value || inspection?._value || 0) || 0;
+            const grade = gradeFromScoreV108(fallback);
+            scoreResult = {
+                finalScore: fallback,
+                grade,
+                gradeLabel: gradeLabelV108(grade)
+            };
+        }
+
+        injectFinalGradeCardV108(scoreResult);
+    }
+
+    // Ganti injector v61 agar card akhir hanya berisi 2 card: persentase dan grade.
+    try {
+        window.LianReportEditableGradeV61 = {
+            ...(window.LianReportEditableGradeV61 || {}),
+            inject: injectFinalGradeCardV108,
+            bind: bindFinalGradeCardV108,
+            enhance: reinjectCurrentReportGradeV108
+        };
+    } catch (err) {
+        console.warn(TAG, 'override editable grade injector gagal:', err?.message || err);
+    }
+
+    // Setelah report selesai dirender oleh patch lama, rapikan ulang supaya tidak ada raw score dan snapshot text.
+    try {
+        const previousGenerateAndShowReport = typeof generateAndShowReport === 'function' ? generateAndShowReport : null;
+        if (previousGenerateAndShowReport) {
+            generateAndShowReport = function (inspection) {
+                const result = previousGenerateAndShowReport.apply(this, arguments);
+
+                [80, 360, 760, 1500, 2600].forEach(delay => {
+                    setTimeout(() => {
+                        sanitizeReportSnapshotDomV108();
+                        reinjectCurrentReportGradeV108(inspection || {});
+                    }, delay);
+                });
+
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch generateAndShowReport gagal:', err?.message || err);
+    }
+
+    window.LianV108SafeReportUi = {
+        cleanSnapshotText: cleanSnapshotTextV108,
+        sanitizeReportSnapshotDom: sanitizeReportSnapshotDomV108,
+        injectFinalGradeCard: injectFinalGradeCardV108,
+        updateProgressBar: () => {
+            try { updateProgressBar(); } catch (_) {}
+        }
+    };
+
+    console.log('✅ inspection.js v108 safe report UI cleanup loaded');
+})();
+
+// =============================================================
+// V109 - EDIT RESAVE ORPHAN ITEM/CATEGORY CLEANUP ONLY
+// =============================================================
+// Tujuan:
+// - Report lama yang hanya dibuka tidak disentuh.
+// - Jika report lama diedit lalu Submit ulang, item yang sudah tidak ada
+//   di master aktif tidak ikut tersimpan lagi ke inspection_details.
+// - Jika kategori sudah dihapus dari master aktif, item dalam kategori itu
+//   juga tidak ikut tersimpan lagi.
+(function () {
+    const TAG = '[v109]';
+
+    function normalizeTextV109(value) {
+        return String(value ?? '').trim().toLowerCase();
+    }
+
+    function isFinalItemStatusV109(value) {
+        return value === 'good' || value === 'warning' || value === 'bad';
+    }
+
+    function isEditSubmitRecordV109(record = {}) {
+        return Boolean(
+            record &&
+            (record._editMode || record.existingInspectionId || record.editingInspectionId)
+        );
+    }
+
+    function getActiveMasterItemsV109() {
+        const items = Array.isArray(sheetItems) ? sheetItems : [];
+        const categories = Array.isArray(sheetCategories) ? sheetCategories : [];
+
+        if (categories.length === 0) return items;
+
+        const activeCategoryNames = new Set(
+            categories
+                .map(category => normalizeTextV109(category?.name || category?.category || category?.title))
+                .filter(Boolean)
+        );
+
+        if (activeCategoryNames.size === 0) return items;
+
+        return items.filter(item => {
+            const categoryName = normalizeTextV109(item?.category || item?.categoryName);
+            return categoryName && activeCategoryNames.has(categoryName);
+        });
+    }
+
+    function getAllowedMasterItemIdsV109() {
+        return new Set(
+            getActiveMasterItemsV109()
+                .map(item => String(item?.id || '').trim())
+                .filter(Boolean)
+        );
+    }
+
+    function filterItemsDataForEditResaveV109(itemsData = {}) {
+        const allowedIds = getAllowedMasterItemIdsV109();
+
+        // Kalau master belum termuat, jangan bersihkan agar tidak menghapus data karena loading terlambat.
+        if (allowedIds.size === 0) return itemsData || {};
+
+        const filtered = {};
+
+        Object.entries(itemsData || {}).forEach(([key, value]) => {
+            const itemId = String(key || '').trim();
+            if (!itemId || itemId.endsWith('_data')) return;
+            if (!isFinalItemStatusV109(value)) return;
+
+            // Hanya item yang masih ada di master aktif yang boleh ikut tersimpan ulang.
+            if (!allowedIds.has(itemId)) return;
+
+            filtered[itemId] = value;
+
+            const metaKey = itemId + '_data';
+            if (itemsData[metaKey] && typeof itemsData[metaKey] === 'object') {
+                filtered[metaKey] = { ...itemsData[metaKey] };
+            }
+        });
+
+        return filtered;
+    }
+
+    function countValidItemsV109(itemsData = {}) {
+        return Object.entries(itemsData || {})
+            .filter(([key, value]) => !String(key).endsWith('_data') && isFinalItemStatusV109(value))
+            .length;
+    }
+
+    try {
+        const previousSubmitInspectionData = typeof submitInspectionData === 'function'
+            ? submitInspectionData
+            : null;
+
+        if (previousSubmitInspectionData && !window.__LIAN_V109_EDIT_RESAVE_CLEANUP_INSTALLED) {
+            submitInspectionData = async function submitInspectionDataV109(record) {
+                if (isEditSubmitRecordV109(record)) {
+                    const beforeCount = countValidItemsV109(record._itemsData || inspectionItemsData || {});
+                    const cleanedItemsData = filterItemsDataForEditResaveV109(record._itemsData || inspectionItemsData || {});
+                    const afterCount = countValidItemsV109(cleanedItemsData);
+
+                    record._itemsData = cleanedItemsData;
+
+                    // Samakan juga state memori agar draft edit yang sedang submit tidak membawa orphan item.
+                    try {
+                        inspectionItemsData = { ...cleanedItemsData };
+                    } catch (_) {}
+
+                    if (beforeCount !== afterCount) {
+                        console.log(TAG, 'item/kategori lama dibersihkan saat edit-save', { beforeCount, afterCount });
+                    }
+                }
+
+                return previousSubmitInspectionData.apply(this, arguments);
+            };
+
+            window.__LIAN_V109_EDIT_RESAVE_CLEANUP_INSTALLED = true;
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch submitInspectionData dilewati:', err?.message || err);
+    }
+
+    window.LianEditResaveCleanupV109 = {
+        filterItemsDataForEditResave: filterItemsDataForEditResaveV109,
+        getActiveMasterItems: getActiveMasterItemsV109,
+        getAllowedMasterItemIds: getAllowedMasterItemIdsV109
+    };
+
+    console.log('✅ inspection.js v109 edit-resave orphan cleanup loaded');
+})();
+
+
+console.log('✅ inspection.js v113 report indicators one-row mobile loaded');
