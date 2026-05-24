@@ -1,1126 +1,1460 @@
 // ===============================
-// LIAN INSPECTOR - REPORT PDF ENGINE (V99 HEADER SAFE SPACING)
+// OFFLINE DATABASE SYSTEM - FIXED PER USER
 // ===============================
-// Fokus versi ini:
-// - Tidak memakai A4 dan tidak memotong halaman.
-// - PDF dibuat sebagai 1 halaman panjang sesuai hasil screen capture report.
-// - Layout mengikuti tampilan .report-v25 di aplikasi apa adanya.
-// - Menghindari masalah page break, section terpotong, dan foto masuk 3 kolom.
 
+const DB_NAME = 'inspection_offline_db';
+const DB_VERSION = 4;
+const STORE_NAME = 'pending_inspections';
+
+let offlineDB = null;
+
+function getCurrentOfflineUser() {
+    if (!currentUser) {
+        return {
+            ownerId: null,
+            username: null,
+            role: null
+        };
+    }
+
+    const ownerId = String(currentUser.id || currentUser.username || '').trim();
+
+    return {
+        ownerId,
+        username: currentUser.username || ownerId,
+        role: currentUser.role || 'inspector'
+    };
+}
+
+
+function getActiveDraftStorageKey() {
+    const user = getCurrentOfflineUser();
+    if (!user.ownerId) return null;
+    return `active_inspection_draft_${user.ownerId}`;
+}
+
+function saveActiveDraftId(id) {
+    try {
+        const key = getActiveDraftStorageKey();
+        if (key && id) localStorage.setItem(key, id);
+    } catch (err) {
+        console.warn('⚠️ Gagal menyimpan active draft id:', err);
+    }
+}
+
+function getActiveDraftId() {
+    try {
+        const key = getActiveDraftStorageKey();
+        return key ? localStorage.getItem(key) : null;
+    } catch (err) {
+        return null;
+    }
+}
+
+function clearActiveDraftId(id = null) {
+    try {
+        const key = getActiveDraftStorageKey();
+        if (!key) return;
+        if (!id || localStorage.getItem(key) === id) {
+            localStorage.removeItem(key);
+        }
+    } catch (err) {
+        console.warn('⚠️ Gagal membersihkan active draft id:', err);
+    }
+}
+
+async function getActiveOfflineInspection() {
+    const activeId = getActiveDraftId();
+
+    if (activeId) {
+        const activeDraft = await getOfflineInspectionById(activeId).catch(() => null);
+        if (activeDraft && isDraftOwnedByCurrentUser(activeDraft) &&
+            activeDraft.status === 'draft' && (activeDraft.syncStatus || 'draft') === 'draft') {
+            return activeDraft;
+        }
+    }
+
+    return getLastOfflineInspection();
+}
+
+function createOfflineInspectionId() {
+    const user = getCurrentOfflineUser();
+    const ownerId = user.ownerId || 'anonymous';
+    const safeOwner = ownerId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const random = Math.random().toString(36).slice(2, 8);
+
+    return `draft_${safeOwner}_${Date.now()}_${random}`;
+}
+
+function isDraftOwnedByCurrentUser(draft) {
+    const user = getCurrentOfflineUser();
+
+    if (!user.ownerId || !draft) return false;
+
+    // New format: ownerId.
+    if (String(draft.ownerId || '') === user.ownerId) return true;
+
+    // Legacy format: inspectorId / inspectorName.
+    if (String(draft.inspectorId || '') === user.ownerId) return true;
+    if (draft.inspectorName && draft.inspectorName === user.username) return true;
+
+    return false;
+}
+
+function initOfflineDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+        request.onerror = () => {
+            console.error('❌ IndexedDB gagal dibuat', request.error);
+            reject(request.error);
+        };
+
+        request.onsuccess = () => {
+            offlineDB = request.result;
+            console.log('✅ IndexedDB ready');
+            resolve();
+        };
+
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            let store;
+
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                console.log('✅ Store IndexedDB dibuat');
+            } else {
+                store = event.target.transaction.objectStore(STORE_NAME);
+            }
+
+            // Index tidak wajib untuk jalan, tapi membantu pemisahan user dan sync.
+            if (!store.indexNames.contains('by_owner')) {
+                store.createIndex('by_owner', 'ownerId', { unique: false });
+            }
+            if (!store.indexNames.contains('by_status')) {
+                store.createIndex('by_status', 'status', { unique: false });
+            }
+            if (!store.indexNames.contains('by_sync_status')) {
+                store.createIndex('by_sync_status', 'syncStatus', { unique: false });
+            }
+        };
+    });
+}
+
+function putOfflineDraft(draft) {
+    return new Promise((resolve, reject) => {
+        if (!offlineDB) {
+            reject(new Error('IndexedDB belum ready'));
+            return;
+        }
+
+        const transaction = offlineDB.transaction(STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.put(draft);
+
+        request.onsuccess = () => resolve(draft);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function getOfflineInspectionById(id) {
+    return new Promise((resolve, reject) => {
+        if (!offlineDB) {
+            reject(new Error('IndexedDB belum ready'));
+            return;
+        }
+
+        const transaction = offlineDB.transaction(STORE_NAME, 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.get(id);
+
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function getRawOfflineInspections() {
+    return new Promise((resolve, reject) => {
+        if (!offlineDB) {
+            reject(new Error('IndexedDB belum ready'));
+            return;
+        }
+
+        const transaction = offlineDB.transaction(STORE_NAME, 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.getAll();
+
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function saveInspectionOffline(data = {}) {
+    if (!currentUser) {
+        console.warn('⚠️ Tidak ada currentUser, draft tidak disimpan');
+        return null;
+    }
+
+    const user = getCurrentOfflineUser();
+    const now = new Date().toISOString();
+    const id = data.id || currentOfflineInspectionId || createOfflineInspectionId();
+    const existing = await getOfflineInspectionById(id).catch(() => null);
+
+    const draft = {
+        ...(existing || {}),
+        id,
+        ownerId: user.ownerId,
+        inspectorId: user.ownerId,
+        inspectorName: user.username,
+        role: user.role,
+        vehicleData: data.vehicleData ?? existing?.vehicleData ?? {},
+        itemsData: data.itemsData ?? existing?.itemsData ?? {},
+        // v5b: simpan checkbox kelengkapan dokumen dan aksesoris di IndexedDB.
+        // Sebelumnya data ini dikirim dari inspection.js, tetapi terbuang di sini,
+        // sehingga setelah refresh checkbox kembali kosong.
+        documentsData: data.documentsData ?? existing?.documentsData ?? {},
+        accessoriesData: data.accessoriesData ?? existing?.accessoriesData ?? {},
+        remotePayload: data.remotePayload ?? existing?.remotePayload ?? null,
+        status: data.status || existing?.status || 'draft',
+        syncStatus: data.syncStatus || existing?.syncStatus || 'draft',
+        createdAt: existing?.createdAt || data.createdAt || now,
+        updatedAt: now,
+        appVersion: 3
+    };
+
+    currentOfflineInspectionId = id;
+    saveActiveDraftId(id);
+
+    const savedDraft = await putOfflineDraft(draft);
+    console.log('💾 Draft tersimpan:', savedDraft.status);
+
+    // Cloud draft backup ringan:
+    // IndexedDB tetap menjadi sumber utama offline, tetapi ketika online draft juga
+    // di-upsert ke Supabase active_inspections agar tidak hilang bila device bermasalah.
+    // Cloud draft backup hanya untuk draft aktif.
+    // Saat Submit, status berubah menjadi pending_sync; jangan kirim lagi ke active_inspections
+    // karena payload submit bisa besar dan tujuan active_inspections hanya monitoring draft berjalan.
+    if (savedDraft.status === 'draft' && savedDraft.syncStatus === 'draft' && typeof scheduleActiveInspectionSync === 'function') {
+        scheduleActiveInspectionSync(savedDraft.id);
+    }
+
+    return savedDraft;
+}
+
+// Compatibility dengan kode lama.
+function updateInspectionOffline(vehicleData) {
+    if (!currentUser) return;
+
+    if (!currentOfflineInspectionId) {
+        currentOfflineInspectionId = createOfflineInspectionId();
+    }
+
+    return saveInspectionOffline({
+        id: currentOfflineInspectionId,
+        vehicleData: vehicleData || {},
+        itemsData: inspectionItemsData || {},
+        documentsData: typeof getDocumentFormData === 'function' ? getDocumentFormData() : {},
+        accessoriesData: typeof getAccessoryFormData === 'function' ? getAccessoryFormData() : {},
+        status: 'draft',
+        syncStatus: 'draft'
+    });
+}
+
+async function getLastOfflineInspection() {
+    const data = await getRawOfflineInspections();
+
+    const ownedDrafts = data.filter(draft => {
+        if (!isDraftOwnedByCurrentUser(draft)) return false;
+        // Restore hanya untuk draft yang masih aktif. Pending final sync tidak dibuka lagi sebagai form.
+        return draft.status === 'draft' && (draft.syncStatus || 'draft') === 'draft';
+    });
+
+    if (ownedDrafts.length === 0) return null;
+
+    ownedDrafts.sort((a, b) => {
+        const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+        const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+        return bTime - aTime;
+    });
+
+    return ownedDrafts[0];
+}
+
+async function getAllOfflineInspections() {
+    const data = await getRawOfflineInspections();
+
+    let result = data;
+
+    // Admin boleh melihat semua draft lokal di browser yang sama,
+    // tetapi getLastOfflineInspection tetap hanya milik user aktif.
+    if (currentUser?.role !== 'admin') {
+        result = data.filter(isDraftOwnedByCurrentUser);
+    }
+
+    result.sort((a, b) => {
+        const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+        const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+        return bTime - aTime;
+    });
+
+    return result;
+}
+
+function deleteOfflineInspection(id) {
+    return new Promise((resolve, reject) => {
+        if (!offlineDB || !id) {
+            resolve(false);
+            return;
+        }
+
+        const transaction = offlineDB.transaction(STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.delete(id);
+
+        request.onsuccess = () => {
+            clearActiveDraftId(id);
+
+            // Jika draft lokal dibatalkan/dihapus dan sedang online, bersihkan juga cloud draft.
+            if (typeof deleteActiveInspectionFromSupabase === 'function') {
+                deleteActiveInspectionFromSupabase(id).catch(console.warn);
+            }
+
+            resolve(true);
+        };
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function markInspectionReadyToSync(record) {
+    if (!record) throw new Error('Record inspeksi kosong');
+
+    const vehicleData = record._vehicleData || (typeof getVehicleFormData === 'function' ? getVehicleFormData() : (inspectionFormData || {}));
+    const itemsData = record._itemsData || inspectionItemsData || {};
+    const documentsData = record._documentsData || (typeof getDocumentFormData === 'function' ? getDocumentFormData() : {});
+    const accessoriesData = record._accessoriesData || (typeof getAccessoryFormData === 'function' ? getAccessoryFormData() : {});
+
+    return saveInspectionOffline({
+        id: currentOfflineInspectionId || createOfflineInspectionId(),
+        vehicleData,
+        itemsData,
+        documentsData,
+        accessoriesData,
+        remotePayload: record,
+        status: 'pending_sync',
+        syncStatus: 'pending',
+        submittedAt: new Date().toISOString()
+    });
+}
+
+function buildRecordFromOfflineDraft(draft) {
+    const vehicle = draft.vehicleData || {};
+
+    return {
+        type: 'inspection',
+        id: draft.remotePayload?.id || `insp_${Date.now()}`,
+        inspectionId: draft.remotePayload?.inspectionId || draft.remotePayload?.id || `insp_${Date.now()}`,
+        inspectorUsername: draft.inspectorName,
+        customerName: vehicle.customerName || '',
+        customerPhone: vehicle.customerPhone || '',
+        vehicleType: vehicle.vehicleType || '',
+        vehiclePlate: vehicle.vehiclePlate || '',
+        vehicleYear: vehicle.vehicleYear || '',
+        vehicleColor: vehicle.vehicleColor || '',
+        vehicleTransmission: vehicle.vehicleTransmission || '',
+        vehicleFuel: vehicle.vehicleFuel || '',
+        vehicleMileage: vehicle.vehicleMileage || '',
+        issues: JSON.stringify(draft.itemsData || {}),
+        value: 0,
+        status: 'completed',
+        inspectionDate: new Date().toISOString(),
+        createdAt: draft.createdAt || new Date().toISOString()
+    };
+}
+
+
+// ===============================
+// ACTIVE INSPECTION CLOUD DRAFT SYNC
+// ===============================
+// Tujuan:
+// - Draft tetap utama di IndexedDB agar aman saat offline.
+// - Saat online, draft di-backup ke Supabase public.active_inspections.
+// - Tabel final public.inspections dan public.inspection_details tetap dipakai nanti saat Submit final.
+
+function getActiveInspectionSyncTimers() {
+    if (!window.__activeInspectionSyncTimers) {
+        window.__activeInspectionSyncTimers = {};
+    }
+    return window.__activeInspectionSyncTimers;
+}
+
+
+function createValidUuid() {
+    // Supabase active_inspections.id bertipe UUID.
+    // Local draft id seperti draft_xxx tidak boleh dikirim ke kolom id UUID.
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+    }
+
+    // Fallback UUID v4 sederhana untuk browser lama.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+function getRemoteActiveInspectionId(draft) {
+    if (!draft) return null;
+    return draft.activeInspectionId || draft.remoteActiveInspectionId || draft.supabaseActiveInspectionId || null;
+}
+
+function getJsonSafeClone(value) {
+    // Hindari error/timeout saat sync active_inspections.
+    // Foto lokal/base64 hanya boleh hidup di IndexedDB untuk preview cepat, bukan dikirim ke Supabase JSONB.
+    try {
+        return JSON.parse(JSON.stringify(value, (key, val) => {
+            const blockedKeys = [
+                'blob',
+                'file',
+                'rawFile',
+                'base64',
+                'dataUrl',
+                'previewDataUrl',
+                'localBase64',
+                'previewUrl',      // biasanya data:image/base64 dari preview lokal
+                'localPreview',    // preview lokal besar
+                'localDataUrl',
+                'objectUrl',       // blob: URL browser
+                'thumbnailDataUrl',
+                'thumbDataUrl'
+            ];
+
+            if (blockedKeys.includes(key)) return undefined;
+
+            // File/Blob tidak aman dimasukkan ke JSONB Supabase.
+            if (typeof Blob !== 'undefined' && val instanceof Blob) return undefined;
+            if (typeof File !== 'undefined' && val instanceof File) return undefined;
+
+            // String base64/blob URL berukuran besar dapat membuat active_inspections timeout.
+            if (typeof val === 'string') {
+                const trimmed = val.trim();
+                if (trimmed.startsWith('data:image/')) return undefined;
+                if (trimmed.startsWith('blob:')) return undefined;
+                if (trimmed.length > 20000 && /^[A-Za-z0-9+/=\r\n]+$/.test(trimmed.slice(0, 500))) {
+                    return undefined;
+                }
+            }
+
+            return val;
+        }));
+    } catch (err) {
+        console.warn('⚠️ Gagal clone JSON draft, fallback object kosong:', err);
+        return {};
+    }
+}
+
+function hasMeaningfulDraftContent(draft) {
+    if (!draft) return false;
+
+    const vehicle = draft.vehicleData || {};
+    const docs = draft.documentsData || {};
+    const accs = draft.accessoriesData || {};
+    const items = draft.itemsData || {};
+
+    const hasVehicle = Object.values(vehicle).some(value => String(value || '').trim() !== '');
+    const hasDocs = Object.values(docs).some(Boolean);
+    const hasAccs = Object.values(accs).some(Boolean);
+    const hasItems = Object.keys(items).length > 0;
+
+    return hasVehicle || hasDocs || hasAccs || hasItems;
+}
+
+function buildActiveInspectionPayload(draft, remoteActiveInspectionId) {
+    const now = new Date().toISOString();
+    const remoteId = remoteActiveInspectionId || getRemoteActiveInspectionId(draft) || createValidUuid();
+
+    const data = getJsonSafeClone({
+        // ID lokal tetap disimpan di JSONB, bukan di kolom id UUID Supabase.
+        offlineId: draft.id,
+        activeInspectionId: remoteId,
+        ownerId: draft.ownerId,
+        inspectorId: draft.inspectorId,
+        inspectorName: draft.inspectorName,
+        role: draft.role,
+        status: draft.status || 'draft',
+        syncStatus: draft.syncStatus || 'draft',
+        vehicleData: draft.vehicleData || {},
+        documentsData: draft.documentsData || {},
+        accessoriesData: draft.accessoriesData || {},
+        itemsData: draft.itemsData || {},
+        remotePayload: draft.remotePayload || null,
+        createdAt: draft.createdAt || now,
+        updatedAt: draft.updatedAt || now,
+        appVersion: draft.appVersion || 3
+    });
+
+    // Tabel active_inspections kamu punya kolom: id uuid, inspector text, data jsonb, created_at timestamp.
+    // Jangan kirim updated_at karena kolom itu belum ada di screenshot Supabase.
+    return {
+        id: remoteId,
+        inspector: draft.inspectorName || draft.username || draft.ownerId || 'unknown',
+        data,
+        created_at: draft.createdAt || now
+    };
+}
+
+async function upsertActiveInspectionToSupabase(draft) {
+    if (!draft || !draft.id) {
+        return { ok: false, message: 'Draft kosong' };
+    }
+
+    if (!navigator.onLine) {
+        return { ok: false, offline: true, message: 'Masih offline' };
+    }
+
+    if (typeof supabaseClient === 'undefined' || !supabaseClient) {
+        return { ok: false, message: 'Supabase client belum tersedia' };
+    }
+
+    if (draft.status !== 'draft' || draft.syncStatus !== 'draft') {
+        return { ok: false, skipped: true, message: 'Bukan draft aktif, tidak dikirim ke active_inspections' };
+    }
+
+    if (!hasMeaningfulDraftContent(draft)) {
+        return { ok: false, skipped: true, message: 'Draft masih kosong, tidak dikirim ke active_inspections' };
+    }
+
+    // Kolom active_inspections.id di Supabase adalah UUID.
+    // Jadi ID lokal draft_xxx disimpan sebagai data.offlineId, sedangkan kolom id memakai UUID valid.
+    const remoteActiveInspectionId = getRemoteActiveInspectionId(draft) || createValidUuid();
+    const payload = buildActiveInspectionPayload(draft, remoteActiveInspectionId);
+
+    try {
+        const { error } = await supabaseClient
+            .from('active_inspections')
+            .upsert([payload], { onConflict: 'id' });
+
+        if (error) throw error;
+
+        await putOfflineDraft({
+            ...draft,
+            activeInspectionId: remoteActiveInspectionId,
+            remoteActiveInspectionId,
+            supabaseActiveInspectionId: remoteActiveInspectionId,
+            activeSyncStatus: 'synced',
+            activeSyncedAt: new Date().toISOString(),
+            lastActiveSyncError: null,
+            updatedAt: draft.updatedAt || new Date().toISOString()
+        });
+
+        console.log('☁️ Draft aktif tersinkron');
+        return { ok: true, activeInspectionId: remoteActiveInspectionId };
+    } catch (err) {
+        console.error('❌ Sync active_inspections gagal:', err);
+
+        await putOfflineDraft({
+            ...draft,
+            activeInspectionId: remoteActiveInspectionId,
+            remoteActiveInspectionId,
+            supabaseActiveInspectionId: remoteActiveInspectionId,
+            activeSyncStatus: 'error',
+            lastActiveSyncError: err?.message || String(err),
+            updatedAt: draft.updatedAt || new Date().toISOString()
+        });
+
+        return { ok: false, error: err };
+    }
+}
+
+function scheduleActiveInspectionSync(id, delay = 1200) {
+    if (!id || !navigator.onLine) return;
+
+    const timers = getActiveInspectionSyncTimers();
+
+    if (timers[id]) {
+        clearTimeout(timers[id]);
+    }
+
+    timers[id] = setTimeout(async () => {
+        delete timers[id];
+
+        try {
+            const draft = await getOfflineInspectionById(id);
+            if (!draft) return;
+
+            // active_inspections hanya untuk draft berjalan. Submit final memakai pending sync terpisah.
+            if (draft.status !== 'draft' || draft.syncStatus !== 'draft') return;
+
+            await upsertActiveInspectionToSupabase(draft);
+        } catch (err) {
+            console.error('❌ Scheduled active sync gagal:', err);
+        }
+    }, delay);
+}
+
+async function syncActiveDraftsToSupabase() {
+    if (!navigator.onLine || !offlineDB) {
+        return { synced: 0, failed: 0, skipped: 0 };
+    }
+
+    const drafts = await getRawOfflineInspections();
+
+    // Kirim semua draft lokal yang masih berjalan agar admin bisa monitoring lintas user
+    // pada browser/perangkat yang sama, tetapi restore tetap dipisah oleh ownerId.
+    const activeDrafts = drafts.filter(draft => {
+        const status = draft.status || 'draft';
+        const syncStatus = draft.syncStatus || 'draft';
+
+        return (
+            status === 'draft' &&
+            syncStatus === 'draft' &&
+            hasMeaningfulDraftContent(draft)
+        );
+    });
+
+    let synced = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const draft of activeDrafts) {
+        const result = await upsertActiveInspectionToSupabase(draft);
+        if (result.ok) synced += 1;
+        else if (result.skipped) skipped += 1;
+        else failed += 1;
+    }
+
+    if (synced > 0) {
+        console.log(`☁️ ${synced} draft aktif tersinkron`);
+    }
+
+    return { synced, failed, skipped };
+}
+
+async function deleteActiveInspectionFromSupabase(id) {
+    if (!id || !navigator.onLine || typeof supabaseClient === 'undefined' || !supabaseClient) {
+        return { ok: false };
+    }
+
+    try {
+        const draft = await getOfflineInspectionById(id).catch(() => null);
+        const remoteId = getRemoteActiveInspectionId(draft) || (isUuid(id) ? id : null);
+        const deletedBy = [];
+
+        // Cara utama: hapus berdasarkan UUID remote active_inspections.
+        if (remoteId && isUuid(remoteId)) {
+            const { error } = await supabaseClient
+                .from('active_inspections')
+                .delete()
+                .eq('id', remoteId);
+
+            if (error) throw error;
+            deletedBy.push('uuid');
+        }
+
+        // Fallback penting: hapus berdasarkan data->>offlineId.
+        // Ini tetap jalan walaupun draft IndexedDB sudah terhapus atau remote UUID hilang.
+        const { error: jsonError } = await supabaseClient
+            .from('active_inspections')
+            .delete()
+            .eq('data->>offlineId', String(id));
+
+        if (jsonError) throw jsonError;
+        deletedBy.push('offlineId');
+
+        // Fallback tambahan untuk data lama yang menyimpan id lokal di field lain.
+        const { error: legacyError } = await supabaseClient
+            .from('active_inspections')
+            .delete()
+            .or(`data->>id.eq.${String(id)},data->>localId.eq.${String(id)}`);
+
+        if (legacyError) {
+            // Supabase/PostgREST kadang tidak suka filter json path pada versi tertentu.
+            // Jangan gagalkan cleanup utama kalau fallback legacy gagal.
+            console.warn('⚠️ Fallback legacy delete active_inspections dilewati:', legacyError);
+        } else {
+            deletedBy.push('legacyJson');
+        }
+
+        console.log('🧹 Draft active_inspections cleanup:', {
+            offlineId: id,
+            activeInspectionId: remoteId,
+            deletedBy
+        });
+        return { ok: true, method: deletedBy.join('+') || 'none' };
+    } catch (err) {
+        console.warn('⚠️ Gagal hapus active_inspections:', err);
+        return { ok: false, error: err };
+    }
+}
+
+async function markActiveInspectionSubmittedInSupabase(id, finalInspectionId) {
+    if (!id || !navigator.onLine || typeof supabaseClient === 'undefined' || !supabaseClient) {
+        return { ok: false };
+    }
+
+    try {
+        const draft = await getOfflineInspectionById(id).catch(() => null);
+        const remoteId = getRemoteActiveInspectionId(draft);
+        const now = new Date().toISOString();
+        const baseData = {
+            ...(draft ? buildActiveInspectionPayload(draft, remoteId || undefined).data : {}),
+            offlineId: String(id),
+            status: 'submitted',
+            syncStatus: 'synced',
+            finalInspectionId,
+            submittedAt: now,
+            updatedAt: now
+        };
+
+        if (remoteId && isUuid(remoteId)) {
+            const { error } = await supabaseClient
+                .from('active_inspections')
+                .update({ data: baseData })
+                .eq('id', remoteId);
+
+            if (error) throw error;
+            console.log('🏁 Draft aktif ditandai submitted');
+            return { ok: true, method: 'uuid' };
+        }
+
+        const { error } = await supabaseClient
+            .from('active_inspections')
+            .update({ data: baseData })
+            .eq('data->>offlineId', String(id));
+
+        if (error) throw error;
+        console.log('🏁 Draft aktif ditandai submitted');
+        return { ok: true, method: 'offlineId' };
+    } catch (err) {
+        console.warn('⚠️ Gagal menandai active_inspections submitted:', err);
+        return { ok: false, error: err };
+    }
+}
+
+async function syncAllOfflineData() {
+    const activeResult = await syncActiveDraftsToSupabase();
+    const pendingResult = typeof syncPendingInspections === 'function'
+        ? await syncPendingInspections()
+        : { synced: 0, failed: 0 };
+
+    return {
+        active: activeResult,
+        pending: pendingResult
+    };
+}
+
+
+
+function isUuid(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function pickFinalInspectionId(draft) {
+    const remote = draft?.remotePayload || {};
+    const candidates = [remote.id, remote.inspection_id, remote.inspectionId, draft?.finalInspectionId];
+    for (const candidate of candidates) {
+        if (isUuid(candidate)) return candidate;
+    }
+    return createValidUuid();
+}
+
+function cleanInspectionRow(row) {
+    // Kirim hanya kolom yang terlihat/aman pada tabel public.inspections.
+    // Jangan ikutkan _itemsData/_documentsData karena itu bukan kolom Supabase.
+    return {
+        id: row.id,
+        inspector: row.inspector || row.inspectorUsername || row.inspector_name || 'unknown',
+        customer_name: row.customer_name || row.customerName || '',
+        customer_phone: row.customer_phone || row.customerPhone || '',
+        vehicle_type: row.vehicle_type || row.vehicleType || '',
+        vehicle_plate: row.vehicle_plate || row.vehiclePlate || '',
+        vehicle_year: row.vehicle_year || row.vehicleYear || '',
+        vehicle_color: row.vehicle_color || row.vehicleColor || '',
+        vehicle_transmission: row.vehicle_transmission || row.vehicleTransmission || '',
+        vehicle_fuel: row.vehicle_fuel || row.vehicleFuel || ''
+    };
+}
+
+function getItemNameForDetail(itemId) {
+    try {
+        const item = (typeof sheetItems !== 'undefined' ? sheetItems : []).find(i => String(i.id) === String(itemId));
+        return item?.name || item?.item_name || item?.title || String(itemId);
+    } catch (_) {
+        return String(itemId);
+    }
+}
+
+function normalizeDetailStatus(status) {
+    if (status === 'good') return 'good';
+    if (status === 'warning') return 'warning';
+    if (status === 'bad') return 'bad';
+    return String(status || '');
+}
+
+function buildDetailNote(meta = {}) {
+    const parts = [];
+    if (meta.selectedDamage) parts.push(`Kerusakan: ${meta.selectedDamage}`);
+    if (meta.notes) parts.push(String(meta.notes));
+    return parts.join('\n');
+}
+
+function getPhotoUrlText(meta = {}) {
+    const photos = Array.isArray(meta.photos) ? meta.photos : [];
+    return photos.map(photo => {
+        if (!photo) return '';
+        if (typeof photo === 'string') return photo;
+
+        const directUrl = photo.url || photo.photo_url || photo.photoUrl || photo.driveUrl || photo.remoteUrl || '';
+        if (directUrl) return directUrl;
+
+        const fileId = photo.fileId || photo.file_id || photo.driveFileId || photo.drive_file_id || '';
+        if (fileId) return `https://drive.google.com/uc?export=view&id=${fileId}`;
+
+        return '';
+    }).filter(Boolean).join('\n');
+}
+
+function buildFinalRowsFromDraft(draft) {
+    const remote = draft.remotePayload || {};
+    const vehicle = remote._vehicleData || draft.vehicleData || {};
+    const items = remote._itemsData || draft.itemsData || {};
+    const docs = remote._documentsData || draft.documentsData || {};
+    const accs = remote._accessoriesData || draft.accessoriesData || {};
+    const inspectionId = pickFinalInspectionId(draft);
+    const now = new Date().toISOString();
+
+    const inspectionRow = cleanInspectionRow({
+        id: inspectionId,
+        inspector: remote.inspector || draft.inspectorName || draft.username || draft.ownerId,
+        customer_name: remote.customer_name || vehicle.customerName,
+        customer_phone: remote.customer_phone || vehicle.customerPhone,
+        vehicle_type: remote.vehicle_type || vehicle.vehicleType,
+        vehicle_plate: remote.vehicle_plate || vehicle.vehiclePlate,
+        vehicle_year: remote.vehicle_year || vehicle.vehicleYear,
+        vehicle_color: remote.vehicle_color || vehicle.vehicleColor,
+        vehicle_transmission: remote.vehicle_transmission || vehicle.vehicleTransmission,
+        vehicle_fuel: remote.vehicle_fuel || vehicle.vehicleFuel
+    });
+
+    const detailRows = [];
+
+    Object.entries(items || {}).forEach(([key, status]) => {
+        if (String(key).endsWith('_data')) return;
+        if (!(status === 'good' || status === 'warning' || status === 'bad')) return;
+
+        const meta = items[key + '_data'] || {};
+        detailRows.push({
+            id: createValidUuid(),
+            inspection_id: inspectionId,
+            item_name: getItemNameForDetail(key),
+            status: normalizeDetailStatus(status),
+            note: buildDetailNote(meta),
+            photo_url: getPhotoUrlText(meta),
+            created_at: now
+        });
+    });
+
+    const docLabels = {
+        doc_bpkb: 'Dokumen - BPKB',
+        doc_stnk: 'Dokumen - STNK',
+        doc_faktur: 'Dokumen - Faktur',
+        doc_forma: 'Dokumen - Form A',
+        doc_kir: 'Dokumen - KIR',
+        doc_manual: 'Dokumen - Buku Manual',
+        doc_servis: 'Dokumen - Buku Servis'
+    };
+
+    Object.entries(docLabels).forEach(([key, label]) => {
+        detailRows.push({
+            id: createValidUuid(),
+            inspection_id: inspectionId,
+            item_name: label,
+            status: docs[key] ? 'ada' : 'tidak_ada',
+            note: '',
+            photo_url: '',
+            created_at: now
+        });
+    });
+
+    const accLabels = {
+        acc_kunci_serep: 'Aksesori - Kunci Serep',
+        acc_kunci_roda: 'Aksesori - Kunci Roda',
+        acc_ban_serep: 'Aksesori - Ban Serep',
+        acc_dongkrak: 'Aksesori - Dongkrak'
+    };
+
+    Object.entries(accLabels).forEach(([key, label]) => {
+        detailRows.push({
+            id: createValidUuid(),
+            inspection_id: inspectionId,
+            item_name: label,
+            status: accs[key] ? 'ada' : 'tidak_ada',
+            note: '',
+            photo_url: '',
+            created_at: now
+        });
+    });
+
+    return { inspectionId, inspectionRow, detailRows };
+}
+
+async function syncOfflineInspectionById(id) {
+    const draft = await getOfflineInspectionById(id);
+
+    if (!draft) {
+        return { ok: false, message: 'Draft tidak ditemukan' };
+    }
+
+    if (!navigator.onLine) {
+        return { ok: false, offline: true, message: 'Masih offline' };
+    }
+
+    try {
+        const { inspectionId, inspectionRow, detailRows } = buildFinalRowsFromDraft(draft);
+
+        const { error: inspectionError } = await supabaseClient
+            .from('inspections')
+            .upsert([inspectionRow], { onConflict: 'id' });
+
+        if (inspectionError) throw inspectionError;
+
+        // Hindari detail dobel kalau sync diulang.
+        const { error: deleteDetailsError } = await supabaseClient
+            .from('inspection_details')
+            .delete()
+            .eq('inspection_id', inspectionId);
+
+        if (deleteDetailsError) throw deleteDetailsError;
+
+        if (detailRows.length > 0) {
+            const { error: detailsError } = await supabaseClient
+                .from('inspection_details')
+                .insert(detailRows);
+
+            if (detailsError) throw detailsError;
+        }
+
+        // Setelah final berhasil masuk ke inspections + inspection_details,
+        // tandai dulu cloud draft sebagai submitted. Kalau delete gagal karena jaringan/RLS,
+        // monitoring admin tetap tidak akan menganggapnya sedang inspeksi.
+        await markActiveInspectionSubmittedInSupabase(id, inspectionId).catch(console.warn);
+        await deleteActiveInspectionFromSupabase(id);
+        clearActiveDraftId(id);
+        await putOfflineDraft({
+            ...draft,
+            status: 'submitted',
+            syncStatus: 'synced',
+            finalInspectionId: inspectionId,
+            submittedSyncedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        }).catch(() => null);
+        await deleteOfflineInspection(id);
+        console.log('✅ Inspeksi final tersinkron:', inspectionId, detailRows.length + ' detail');
+
+        return { ok: true, inspectionId, details: detailRows.length };
+    } catch (err) {
+        console.error('❌ Sync final inspection gagal:', err);
+
+        await putOfflineDraft({
+            ...draft,
+            syncStatus: 'error',
+            lastSyncError: err.message || String(err),
+            updatedAt: new Date().toISOString()
+        });
+
+        return { ok: false, error: err };
+    }
+}
+
+async function syncPendingInspections() {
+    if (syncInProgress || !navigator.onLine || !offlineDB) {
+        return { synced: 0, failed: 0 };
+    }
+
+    syncInProgress = true;
+
+    try {
+        const drafts = await getRawOfflineInspections();
+        const pending = drafts.filter(draft =>
+            draft.status === 'pending_sync' ||
+            draft.syncStatus === 'pending' ||
+            draft.syncStatus === 'error'
+        );
+
+        let synced = 0;
+        let failed = 0;
+
+        for (const draft of pending) {
+            const result = await syncOfflineInspectionById(draft.id);
+            if (result.ok) synced += 1;
+            else failed += 1;
+        }
+
+        if (synced > 0) {
+            console.log(`✅ ${synced} inspeksi offline berhasil disinkronkan`);
+            if (typeof loadInitialData === 'function') await loadInitialData();
+        }
+
+        return { synced, failed };
+    } finally {
+        syncInProgress = false;
+    }
+}
+
+window.addEventListener('online', () => {
+    console.log('🌐 Online, sinkronisasi dimulai');
+
+    if (typeof syncActiveDraftsToSupabase === 'function') {
+        syncActiveDraftsToSupabase().catch(console.error);
+    }
+
+    syncPendingInspections();
+});
+
+// Export eksplisit agar aman walaupun urutan script berubah.
+window.initOfflineDB = initOfflineDB;
+window.saveInspectionOffline = saveInspectionOffline;
+window.updateInspectionOffline = updateInspectionOffline;
+window.getOfflineInspectionById = getOfflineInspectionById;
+window.getRawOfflineInspections = getRawOfflineInspections;
+window.getLastOfflineInspection = getLastOfflineInspection;
+window.getAllOfflineInspections = getAllOfflineInspections;
+window.getActiveOfflineInspection = getActiveOfflineInspection;
+window.getActiveDraftId = getActiveDraftId;
+window.clearActiveDraftId = clearActiveDraftId;
+window.createOfflineInspectionId = createOfflineInspectionId;
+window.deleteOfflineInspection = deleteOfflineInspection;
+window.markInspectionReadyToSync = markInspectionReadyToSync;
+window.syncOfflineInspectionById = syncOfflineInspectionById;
+window.syncPendingInspections = syncPendingInspections;
+window.syncActiveDraftsToSupabase = syncActiveDraftsToSupabase;
+window.syncAllOfflineData = syncAllOfflineData;
+window.upsertActiveInspectionToSupabase = upsertActiveInspectionToSupabase;
+window.deleteActiveInspectionFromSupabase = deleteActiveInspectionFromSupabase;
+window.markActiveInspectionSubmittedInSupabase = markActiveInspectionSubmittedInSupabase;
+
+
+
+console.log('✅ offline-sync.js v29 cleanup loaded');
+
+
+// =============================================================
+// V33 - Edit draft guard + odometer metadata detail
+// =============================================================
+(function () {
+    const TAG = '[offline v33]';
+    const log = (...args) => console.log(TAG, ...args);
+
+    function isEditDraftV33(draft) {
+        return Boolean(
+            draft?.remotePayload?._editMode ||
+            draft?.remotePayload?.editingInspectionId ||
+            draft?.status === 'edit_draft' ||
+            draft?.syncStatus === 'edit_draft'
+        );
+    }
+
+    try {
+        const originalUpsertActive = upsertActiveInspectionToSupabase;
+        upsertActiveInspectionToSupabase = async function (draft) {
+            if (isEditDraftV33(draft)) {
+                return { ok: false, skipped: true, editDraft: true, message: 'Edit draft tidak dikirim ke active_inspections' };
+            }
+            return originalUpsertActive.apply(this, arguments);
+        };
+    } catch (_) {}
+
+    try {
+        const originalBuildFinalRows = buildFinalRowsFromDraft;
+        buildFinalRowsFromDraft = function (draft) {
+            const result = originalBuildFinalRows.apply(this, arguments);
+            try {
+                const remote = draft?.remotePayload || {};
+                const vehicle = remote._vehicleData || draft?.vehicleData || {};
+                const mileage = String(vehicle.vehicleMileage || vehicle.vehicle_mileage || vehicle.odometer || '').trim();
+                if (mileage && result?.inspectionId && Array.isArray(result.detailRows)) {
+                    const alreadyExists = result.detailRows.some(row => String(row.item_name || '').toLowerCase().includes('odometer'));
+                    if (!alreadyExists) {
+                        result.detailRows.push({
+                            id: typeof createValidUuid === 'function' ? createValidUuid() : (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+                            inspection_id: result.inspectionId,
+                            item_name: 'Data Kendaraan - Odometer',
+                            status: 'info',
+                            note: mileage,
+                            photo_url: '',
+                            created_at: new Date().toISOString()
+                        });
+                    }
+                }
+            } catch (err) {
+                console.warn(TAG, 'gagal menambah metadata odometer', err?.message || err);
+            }
+            return result;
+        };
+    } catch (_) {}
+
+    // Hapus draft edit lokal kalau ada cleanup normal, tapi jangan pernah masukkan ke monitoring aktif.
+    try {
+        const originalGetAllOffline = getAllOfflineInspections;
+        getAllOfflineInspections = async function () {
+            const rows = await originalGetAllOffline.apply(this, arguments);
+            return (rows || []).filter(row => !isEditDraftV33(row));
+        };
+    } catch (_) {}
+
+    log('edit guard + odometer metadata aktif');
+})();
+
+
+// =============================================================
+// V34 - ODOMETER COLUMN + EDIT CLEANUP GUARD
+// =============================================================
+(function () {
+    const TAG = '[offline v34]';
+
+    function parseMileageForSupabaseV34(value) {
+        if (value === null || value === undefined) return null;
+        const raw = String(value).trim();
+        if (!raw || raw === '-' || raw.toLowerCase() === 'null') return null;
+        // Terima input seperti "12.345", "12,345", "12345 km".
+        const digits = raw.replace(/[^0-9]/g, '');
+        if (!digits) return null;
+        const number = parseInt(digits, 10);
+        return Number.isFinite(number) ? number : null;
+    }
+
+    function pickMileageFromDraftV34(draft) {
+        const remote = draft?.remotePayload || {};
+        const vehicle = remote._vehicleData || draft?.vehicleData || {};
+        return parseMileageForSupabaseV34(
+            vehicle.vehicleMileage ??
+            vehicle.vehicle_mileage ??
+            vehicle.odometer ??
+            remote.vehicle_mileage ??
+            remote.vehicleMileage
+        );
+    }
+
+    try {
+        const previousCleanInspectionRow = cleanInspectionRow;
+        cleanInspectionRow = function (row = {}) {
+            const cleaned = previousCleanInspectionRow.apply(this, arguments);
+            const mileage = parseMileageForSupabaseV34(row.vehicle_mileage ?? row.vehicleMileage ?? row.odometer);
+            // Kolom di Supabase bertipe int4, jadi kirim number atau null.
+            cleaned.vehicle_mileage = mileage;
+            return cleaned;
+        };
+    } catch (err) {
+        console.warn(TAG, 'cleanInspectionRow override gagal:', err?.message || err);
+    }
+
+    try {
+        const previousBuildFinalRows = buildFinalRowsFromDraft;
+        buildFinalRowsFromDraft = function (draft) {
+            const result = previousBuildFinalRows.apply(this, arguments);
+            const mileage = pickMileageFromDraftV34(draft);
+            if (result?.inspectionRow) {
+                result.inspectionRow.vehicle_mileage = mileage;
+            }
+
+            // Simpan juga sebagai detail metadata agar edit/report lama tetap bisa fallback.
+            try {
+                if (mileage !== null && result?.inspectionId && Array.isArray(result.detailRows)) {
+                    const existingIndex = result.detailRows.findIndex(row => String(row.item_name || '').toLowerCase().includes('odometer'));
+                    const odometerRow = {
+                        id: typeof createValidUuid === 'function' ? createValidUuid() : (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+                        inspection_id: result.inspectionId,
+                        item_name: 'Data Kendaraan - Odometer',
+                        status: 'info',
+                        note: String(mileage),
+                        photo_url: '',
+                        created_at: new Date().toISOString()
+                    };
+                    if (existingIndex >= 0) result.detailRows[existingIndex] = { ...result.detailRows[existingIndex], ...odometerRow, id: result.detailRows[existingIndex].id || odometerRow.id };
+                    else result.detailRows.push(odometerRow);
+                }
+            } catch (err) {
+                console.warn(TAG, 'metadata odometer gagal:', err?.message || err);
+            }
+
+            return result;
+        };
+    } catch (err) {
+        console.warn(TAG, 'buildFinalRowsFromDraft override gagal:', err?.message || err);
+    }
+
+    console.log('✅ offline-sync.js v34 odometer column fix loaded');
+})();
+
+
+// =============================================================
+// V38 - HARD OFFLINE DRAFT ISOLATION
+// =============================================================
+// Guard ini penting untuk kondisi refresh, internet mati, HP mati, atau user berpindah tanpa logout.
+// Data IndexedDB user lain tidak dihapus, tetapi tidak boleh direstore / ditimpa user aktif.
+(function () {
+    const TAG = '[offline v38]';
+
+    function isEditDraftV38(draft = {}) {
+        return Boolean(
+            draft?.remotePayload?._editMode ||
+            draft?.remotePayload?.editingInspectionId ||
+            draft?.remotePayload?.existingInspectionId ||
+            draft?.status === 'edit_draft' ||
+            draft?.syncStatus === 'edit_draft'
+        );
+    }
+
+    function isStrictActiveOwnedDraftV38(draft = {}) {
+        if (!draft) return false;
+        if (typeof isDraftOwnedByCurrentUser === 'function' && !isDraftOwnedByCurrentUser(draft)) return false;
+        if (isEditDraftV38(draft)) return false;
+        return draft.status === 'draft' && (draft.syncStatus || 'draft') === 'draft';
+    }
+
+    async function getSafeDraftIdForCurrentUserV38(candidateId) {
+        const user = typeof getCurrentOfflineUser === 'function' ? getCurrentOfflineUser() : { ownerId: null };
+        if (!user.ownerId) return candidateId || null;
+
+        let id = candidateId || null;
+        let existing = null;
+
+        if (id) {
+            existing = await getOfflineInspectionById(id).catch(() => null);
+            if (existing && typeof isDraftOwnedByCurrentUser === 'function' && !isDraftOwnedByCurrentUser(existing)) {
+                console.warn(TAG, 'draft id milik user lain ditolak, membuat draft baru', {
+                    rejectedId: id,
+                    existingOwner: existing.ownerId || existing.inspectorId || existing.inspectorName,
+                    currentOwner: user.ownerId
+                });
+                id = null;
+            }
+        }
+
+        if (!id) id = createOfflineInspectionId();
+        return id;
+    }
+
+    try {
+        getLastOfflineInspection = async function () {
+            const data = await getRawOfflineInspections();
+            const ownedDrafts = (data || []).filter(isStrictActiveOwnedDraftV38);
+
+            if (ownedDrafts.length === 0) return null;
+
+            ownedDrafts.sort((a, b) => {
+                const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+                const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+                return bTime - aTime;
+            });
+
+            return ownedDrafts[0];
+        };
+    } catch (err) {
+        console.warn(TAG, 'override getLastOfflineInspection gagal:', err?.message || err);
+    }
+
+    try {
+        getActiveOfflineInspection = async function () {
+            const activeId = getActiveDraftId();
+
+            if (activeId) {
+                const activeDraft = await getOfflineInspectionById(activeId).catch(() => null);
+
+                if (activeDraft && isStrictActiveOwnedDraftV38(activeDraft)) {
+                    return activeDraft;
+                }
+
+                // Active key salah user / edit_draft / pending sync: bersihkan pointer user aktif saja.
+                clearActiveDraftId(activeId);
+                console.warn(TAG, 'active draft pointer dibersihkan karena tidak valid untuk user aktif', activeId);
+            }
+
+            return getLastOfflineInspection();
+        };
+    } catch (err) {
+        console.warn(TAG, 'override getActiveOfflineInspection gagal:', err?.message || err);
+    }
+
+    try {
+        const originalSaveInspectionOffline = saveInspectionOffline;
+        saveInspectionOffline = async function (data = {}) {
+            if (!currentUser) {
+                console.warn(TAG, 'tidak ada currentUser, draft tidak disimpan');
+                return null;
+            }
+
+            const requestedId = data.id || currentOfflineInspectionId || null;
+            const safeId = await getSafeDraftIdForCurrentUserV38(requestedId);
+            const safeData = { ...(data || {}), id: safeId };
+
+            currentOfflineInspectionId = safeId;
+
+            const saved = await originalSaveInspectionOffline.call(this, safeData);
+
+            // edit_draft bukan active inspection draft. Jangan jadikan kandidat restore otomatis.
+            if (saved && isEditDraftV38(saved)) {
+                clearActiveDraftId(saved.id);
+            }
+
+            // Safety final: kalau somehow owner tersimpan berbeda, jangan dipakai runtime.
+            if (saved && typeof isDraftOwnedByCurrentUser === 'function' && !isDraftOwnedByCurrentUser(saved)) {
+                console.warn(TAG, 'hasil save bukan milik user aktif, runtime id dibersihkan', saved.id);
+                currentOfflineInspectionId = null;
+                return null;
+            }
+
+            return saved;
+        };
+    } catch (err) {
+        console.warn(TAG, 'override saveInspectionOffline gagal:', err?.message || err);
+    }
+
+    try {
+        updateInspectionOffline = async function (vehicleData) {
+            if (!currentUser) return null;
+            const safeId = await getSafeDraftIdForCurrentUserV38(currentOfflineInspectionId || null);
+            currentOfflineInspectionId = safeId;
+            return saveInspectionOffline({
+                id: safeId,
+                vehicleData: vehicleData || {},
+                itemsData: typeof inspectionItemsData !== 'undefined' ? (inspectionItemsData || {}) : {},
+                documentsData: typeof getDocumentFormData === 'function' ? getDocumentFormData() : {},
+                accessoriesData: typeof getAccessoryFormData === 'function' ? getAccessoryFormData() : {},
+                status: 'draft',
+                syncStatus: 'draft'
+            });
+        };
+    } catch (err) {
+        console.warn(TAG, 'override updateInspectionOffline gagal:', err?.message || err);
+    }
+
+    try {
+        const originalMarkInspectionReadyToSync = markInspectionReadyToSync;
+        markInspectionReadyToSync = async function (record) {
+            if (!record) throw new Error('Record inspeksi kosong');
+            const safeId = await getSafeDraftIdForCurrentUserV38(currentOfflineInspectionId || null);
+            currentOfflineInspectionId = safeId;
+            return originalMarkInspectionReadyToSync.call(this, record);
+        };
+    } catch (err) {
+        console.warn(TAG, 'override markInspectionReadyToSync gagal:', err?.message || err);
+    }
+
+    console.log('✅ offline-sync.js v38 hard user isolation loaded');
+})();
+
+
+// =============================================================
+// V100 - REPORT DETAIL SNAPSHOT METADATA
+// =============================================================
+// Menyimpan snapshot nama item/kategori di note inspection_details tanpa mengubah skema tabel.
+// Snapshot ini dipakai report agar laporan lama tidak berubah menjadi kategori "Lainnya"
+// ketika master item/kategori sudah dihapus/diubah.
 (function () {
     'use strict';
 
-    const TAG = '[report-pdf v99-header-safe-spacing]';
-    const JSPDF_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-    const HTML2CANVAS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    const TAG = '[offline-sync v100 snapshot]';
+    const SNAPSHOT_RE = /\n?\[LIAN_REPORT_SNAPSHOT:{[\s\S]*?}\]\s*$/i;
 
-    const CFG = {
-        // Lebar desain report di aplikasi. Jika report yang tampil punya lebar aktual,
-        // script akan memakai lebar aktual tersebut; nilai ini hanya fallback.
-        fallbackReportWidthPx: 780,
-        fixedExportWidthPx: 780,
-        renderWindowWidthPx: 1100,
-        canvasScale: 2,
-        jpegQuality: 0.96,
-        backgroundColor: '#ffffff',
-        pdfWidthMm: 210,
-        pdfSafePaddingMm: 3,
-        maxPdfHeightMm: 14000,
-        minPdfHeightMm: 120,
-        // V98: tambahan ruang aman di bawah footer agar copyright tidak terpotong
-        // pada hasil long screenshot PDF.
-        footerSafeExtraPx: 44,
-        // V99: ruang aman halus di header paling atas/kiri-kanan saat export PDF.
-        headerSafeTopPx: 5,
-        headerSafeSidePx: 2
-    };
-
-    function cleanText(value) {
-        return String(value ?? '')
-            .replace(/\u00a0/g, ' ')
-            .replace(/[\t\r]+/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
+    function normV100(value) {
+        return String(value ?? '').trim().toLowerCase();
     }
 
-    function escapeHtml(value) {
-        return String(value ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+    function isReportMetaRowV100(itemName) {
+        const name = normV100(itemName);
+        return name.startsWith('dokumen -') ||
+            name.startsWith('aksesori -') ||
+            name.startsWith('data kendaraan -');
     }
 
-    function sanitizeFilePart(value, fallback = '-') {
-        const cleaned = cleanText(value)
-            .replace(/[\\/:*?"<>|]+/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-        return cleaned || fallback;
+    function getMasterItemsV100() {
+        try { return Array.isArray(sheetItems) ? sheetItems : []; }
+        catch (_) { return []; }
     }
 
-    function getReportContent() {
-        return document.getElementById('reportContent');
+    function findMasterItemV100({ id = '', name = '' } = {}) {
+        const itemId = String(id || '').trim();
+        const itemName = normV100(name);
+        return getMasterItemsV100().find(item =>
+            (itemId && String(item.id || '') === itemId) ||
+            (itemName && normV100(item.name || item.item_name || item.title) === itemName)
+        ) || null;
     }
 
-    function getReportRoot() {
-        const reportContent = getReportContent();
-        if (!reportContent) {
-            throw new Error('Report belum tersedia. Buka laporan terlebih dahulu.');
-        }
-
-        const root = reportContent.querySelector('.report-v25') || reportContent.firstElementChild;
-        if (!root || !cleanText(root.innerText || root.textContent || '')) {
-            throw new Error('Isi laporan masih kosong. Tunggu laporan selesai tampil.');
-        }
-        return root;
+    function getSourceItemsV100(draft = {}) {
+        const remote = draft.remotePayload || {};
+        return remote._itemsData || draft.itemsData || {};
     }
 
-    function getLastInspection() {
-        return window.__lianReportPdfLastInspectionV69 ||
-            window.__lianLastReportInspectionV64 ||
-            window.__lianLastReportInspectionV65 ||
-            window.__lianLastReportInspectionV66 ||
-            window.__lianLastReportInspectionV67 ||
-            window.__lianLastReportInspectionV68 ||
-            {};
-    }
+    function buildSnapshotMapV100(items = {}) {
+        const map = new Map();
 
-    function textMatch(pattern, fallback = '') {
-        const text = getReportContent()?.innerText || '';
-        const match = text.match(pattern);
-        return cleanText(match?.[1] || fallback);
-    }
+        Object.entries(items || {}).forEach(([key, status]) => {
+            if (String(key).endsWith('_data')) return;
+            if (!(status === 'good' || status === 'warning' || status === 'bad')) return;
 
-    function getFileName() {
-        const inspection = getLastInspection();
-        const client = sanitizeFilePart(
-            inspection.customerName || inspection.customer_name || textMatch(/Nama Client\s*:\s*([^\n]+)/i),
-            'Client'
-        );
-        const vehicle = sanitizeFilePart(
-            inspection.vehicleType || inspection.vehicle_type || inspection.vehiclePlate || inspection.vehicle_plate || textMatch(/Merk\/Tipe\s*:\s*([^\n]+)/i),
-            'Mobil'
-        );
+            const meta = items[key + '_data'] || {};
+            const master = findMasterItemV100({ id: key, name: meta.itemName || meta.item_name || key });
+            const itemName = meta.itemName || meta.item_name || master?.name || master?.item_name || key;
+            const category = meta.category || meta.categoryName || master?.category || 'Kategori lama';
+            const criticalLevel = meta.critical_level || meta.criticalLevel || master?.critical_level || master?.criticalLevel || 'Low';
 
-        let dateText = '';
-        try {
-            const rawDate = inspection.inspectionDate || inspection.inspection_date || inspection.created_at || inspection.createdAt || '';
-            const d = rawDate ? new Date(rawDate) : new Date();
-            dateText = Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
-        } catch (_) {}
-        if (!dateText) dateText = new Date().toISOString().slice(0, 10);
+            const snapshot = {
+                itemName: String(itemName || key),
+                category: String(category || 'Kategori lama'),
+                critical_level: String(criticalLevel || 'Low')
+            };
 
-        return `${client} - ${vehicle} - ${dateText}`;
-    }
-
-    function ensureUiStyle() {
-        if (document.getElementById('lianReportPdfV84Style')) return;
-
-        const style = document.createElement('style');
-        style.id = 'lianReportPdfV84Style';
-        style.textContent = `
-            .lian-pdf-overlay-v84 {
-                position: fixed; inset: 0; z-index: 9999999;
-                display: none; align-items: center; justify-content: center;
-                background: rgba(15,23,42,.52); backdrop-filter: blur(6px);
-                padding: 20px;
-            }
-            .lian-pdf-box-v84 {
-                width: min(450px, 92vw); background: #fff; border-radius: 24px;
-                padding: 28px 24px; text-align: center;
-                box-shadow: 0 24px 70px rgba(15,23,42,.30);
-                border: 1px solid rgba(226,232,240,.95);
-                font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-            }
-            .lian-pdf-spinner-v84 {
-                width: 58px; height: 58px; margin: 0 auto 16px; border-radius: 999px;
-                border: 5px solid #dbeafe; border-top-color: #2563eb;
-                animation: lianPdfSpinV84 .75s linear infinite;
-            }
-            @keyframes lianPdfSpinV84 { to { transform: rotate(360deg); } }
-            .lian-pdf-title-v84 { font-size: 18px; font-weight: 950; color:#0f172a; margin-bottom:8px; }
-            .lian-pdf-subtitle-v84 { font-size: 12px; font-weight:750; color:#64748b; line-height:1.55; }
-
-            .lian-pdf-export-sandbox-v84 {
-                position: fixed !important;
-                left: -12000px !important;
-                top: 0 !important;
-                background: #ffffff !important;
-                pointer-events: none !important;
-                z-index: 1 !important;
-                overflow: visible !important;
-                padding: 0 !important;
-                margin: 0 !important;
-            }
-            .lian-pdf-export-sandbox-v84,
-            .lian-pdf-export-sandbox-v84 * {
-                box-sizing: border-box !important;
-                animation: none !important;
-                transition: none !important;
-                -webkit-font-smoothing: antialiased !important;
-                text-rendering: geometricPrecision !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-v25 {
-                margin: 0 !important;
-                background: #ffffff !important;
-                overflow: visible !important;
-                transform: none !important;
-                padding: 5px 2px 0 2px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-remove-badge,
-            .lian-pdf-export-sandbox-v84 .report-no-print {
-                display: none !important;
-            }
-            /* Kunci foto tetap 2 kolom seperti tampilan report aplikasi, bukan 3 kolom. */
-            .lian-pdf-export-sandbox-v84 .report-photo-grid {
-                display: grid !important;
-                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-                gap: 16px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-photo-card {
-                break-inside: avoid !important;
-                page-break-inside: avoid !important;
-                overflow: hidden !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-photo-card img {
-                width: 100% !important;
-                height: auto !important;
-                min-height: 0 !important;
-                max-height: none !important;
-                aspect-ratio: auto !important;
-                object-fit: contain !important;
-                object-position: center center !important;
-                display: block !important;
-                background: #ffffff !important;
-            }
-
-            /* V90: kunci export ke layout desktop 780px seperti PDF1 meskipun aplikasi dibuka dari HP. */
-            .lian-pdf-export-sandbox-v84 {
-                width: 780px !important;
-                min-width: 780px !important;
-                max-width: 780px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-v25 {
-                width: 780px !important;
-                min-width: 780px !important;
-                max-width: 780px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-top {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) minmax(215px, 300px) !important;
-                gap: 14px !important;
-                align-items: center !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-top img {
-                height: 72px !important;
-                max-width: 260px !important;
-                object-fit: contain !important;
-                object-position: left center !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-detail-box {
-                min-width: 215px !important;
-                width: auto !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-client-bar {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) minmax(0, .85fr) !important;
-                gap: 10px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-vehicle-grid {
-                display: grid !important;
-                grid-template-columns: 1fr 1fr !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-vehicle-grid > div {
-                padding: 16px 20px !important;
-                border-bottom: 0 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-vehicle-grid > div:first-child {
-                border-right: 1px solid #0f172a33 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-vehicle-grid > div:last-child {
-                border-right: 0 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-field-row {
-                font-size: 13px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-completeness-grid {
-                display: grid !important;
-                grid-template-columns: 1.3fr .9fr !important;
-                gap: 10px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-badges {
-                display: grid !important;
-                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-                gap: 10px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-category-grid {
-                display: grid !important;
-                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-                gap: 12px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-findings-grid {
-                display: grid !important;
-                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-                gap: 10px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-point-grid {
-                display: grid !important;
-                grid-template-columns: 1fr 1fr !important;
-                column-gap: 36px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-point-row {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 18px !important;
-            }
-
-            /* Tambahan aman tanpa mengubah desain besar: cegah teks kecil di area logo terklip. */
-            .lian-pdf-export-sandbox-v84 .report-top,
-            .lian-pdf-export-sandbox-v84 .report-top * {
-                overflow: visible !important;
-            }
-
-            /* V91: koreksi baseline html2canvas secara agresif tapi hanya di sandbox export PDF.
-               Masalah utama di beberapa device: teks hasil capture turun ke batas bawah kolom.
-               Solusi: beri ruang vertikal aman + angkat elemen teks, tanpa mengubah UI aplikasi. */
-            .lian-pdf-export-sandbox-v84 .__lian-export-text-lift {
-                position: relative !important;
-                top: -2.6px !important;
-                line-height: 1.36 !important;
-                vertical-align: middle !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-client-bar,
-            .lian-pdf-export-sandbox-v84 .report-detail-box,
-            .lian-pdf-export-sandbox-v84 .report-field-row,
-            .lian-pdf-export-sandbox-v84 .report-completeness-grid,
-            .lian-pdf-export-sandbox-v84 .report-badges,
-            .lian-pdf-export-sandbox-v84 .report-category-score,
-            .lian-pdf-export-sandbox-v84 .report-findings-grid,
-            .lian-pdf-export-sandbox-v84 .report-point-row,
-            .lian-pdf-export-sandbox-v84 .report-photo-card {
-                line-height: 1.36 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-client-bar {
-                min-height: 42px !important;
-                padding-top: 10px !important;
-                padding-bottom: 10px !important;
-                align-items: center !important;
-                overflow: visible !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-client-bar > div {
-                display: flex !important;
-                align-items: center !important;
-                min-height: 22px !important;
-                line-height: 1.36 !important;
-                overflow: visible !important;
-                transform: translateY(-2.2px) !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-detail-box > div,
-            .lian-pdf-export-sandbox-v84 .report-field-row,
-            .lian-pdf-export-sandbox-v84 .report-field-row > b,
-            .lian-pdf-export-sandbox-v84 .report-field-row > span {
-                align-items: center !important;
-                line-height: 1.36 !important;
-                overflow: visible !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-detail-box > div,
-            .lian-pdf-export-sandbox-v84 .report-field-row {
-                min-height: 22px !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-completeness-grid span {
-                min-height: 23px !important;
-                line-height: 1.25 !important;
-                align-items: center !important;
-                overflow: visible !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-guarantee-badge > div:first-of-type {
-                display: flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                line-height: 1 !important;
-                overflow: visible !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-guarantee-badge > div:first-of-type {
-                transform: translateY(-2px) !important;
-            }
-
-
-            /* V93: baseline aman tanpa mengubah bentuk komponen.
-               Jangan mengubah display elemen teks menjadi flex/block karena itu merusak ikon indikator.
-               Cukup angkat teks sedikit dan pastikan overflow tidak memotong. */
-            .lian-pdf-export-sandbox-v84 .report-v25 {
-                font-family: Arial, Helvetica, sans-serif !important;
-                text-size-adjust: 100% !important;
-                -webkit-text-size-adjust: 100% !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-export-text-center {
-                position: relative !important;
-                top: -3px !important;
-                line-height: 1.28 !important;
-                vertical-align: middle !important;
-                overflow: visible !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-detail-box > div,
-            .lian-pdf-export-sandbox-v84 .report-field-row,
-            .lian-pdf-export-sandbox-v84 .report-point-row {
-                align-items: center !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-detail-box > div > *,
-            .lian-pdf-export-sandbox-v84 .report-field-row > *,
-            .lian-pdf-export-sandbox-v84 .report-point-row > div,
-            .lian-pdf-export-sandbox-v84 .report-category-score div,
-            .lian-pdf-export-sandbox-v84 .report-findings-grid div,
-            .lian-pdf-export-sandbox-v84 .report-v25 h1,
-            .lian-pdf-export-sandbox-v84 .report-v25 h2,
-            .lian-pdf-export-sandbox-v84 .report-v25 h3,
-            .lian-pdf-export-sandbox-v84 .report-v25 p {
-                line-height: 1.28 !important;
-                overflow: visible !important;
-            }
-            /* Kembalikan indikator seperti tampilan aplikasi: lingkaran, bukan pill. */
-            .lian-pdf-export-sandbox-v84 .report-guarantee-badge {
-                text-align: center !important;
-                overflow: visible !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-guarantee-badge > div:first-of-type {
-                width: 44px !important;
-                height: 44px !important;
-                min-width: 44px !important;
-                max-width: 44px !important;
-                min-height: 44px !important;
-                max-height: 44px !important;
-                border-radius: 999px !important;
-                display: flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                margin-left: auto !important;
-                margin-right: auto !important;
-                margin-bottom: 8px !important;
-                line-height: 1 !important;
-                overflow: hidden !important;
-                transform: none !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-guarantee-badge > div:first-of-type * {
-                line-height: 1 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-guarantee-badge > div:not(:first-of-type) {
-                line-height: 1.28 !important;
-            }
-            .lian-pdf-export-sandbox-v84 [data-photo-loading="true"],
-            .lian-pdf-export-sandbox-v84 [data-photo-fallback="true"] {
-                display: none !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-photo-grid {
-                align-items: start !important;
-            }
-            .lian-pdf-export-sandbox-v84 .report-photo-card a {
-                background: #ffffff !important;
-            }
-
-            /* V97: final micro-adjustment terarah.
-               Area yang sudah benar (logo, meta tanggal, client bar, data kendaraan) tidak disentuh. */
-            .lian-pdf-export-sandbox-v84 .__lian-chip-inner-lift {
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                gap: 5px !important;
-                line-height: 1 !important;
-                transform: translateY(-1px) !important;
-                white-space: nowrap !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-guarantee-icon-lift {
-                display: inline-block !important;
-                line-height: 1 !important;
-                transform: translateY(-5px) !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-final-score-lift {
-                display: inline-block !important;
-                transform: translateY(-4px) !important;
-                line-height: .98 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-final-grade-lift {
-                display: inline-block !important;
-                transform: translateY(-6px) !important;
-                line-height: .98 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-finding-chip-inner-lift {
-                display: inline-block !important;
-                transform: translateY(-0.7px) !important;
-                line-height: 1 !important;
-                white-space: nowrap !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-point-main-title-lift,
-            .lian-pdf-export-sandbox-v84 .__lian-point-section-title-lift,
-            .lian-pdf-export-sandbox-v84 .__lian-photo-title-lift {
-                display: inline-block !important;
-                transform: translateY(-3px) !important;
-                line-height: 1.15 !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-legend-label-lift {
-                display: inline-block !important;
-                transform: translateY(-2px) !important;
-                line-height: 1.15 !important;
-            }
-
-            /* V98: ruang aman terakhir agar footer/copyright tidak terpotong di batas bawah PDF. */
-            .lian-pdf-export-sandbox-v84 .__lian-export-footer-spacer-v98 {
-                display: block !important;
-                height: 44px !important;
-                min-height: 44px !important;
-                width: 100% !important;
-                background: #ffffff !important;
-                clear: both !important;
-            }
-            .lian-pdf-export-sandbox-v84 .__lian-export-footer-card-v98 {
-                overflow: visible !important;
-                min-height: 42px !important;
-                box-sizing: border-box !important;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-
-    function showOverlay(message = 'Menyiapkan laporan...', fileName = getFileName()) {
-        ensureUiStyle();
-        let overlay = document.getElementById('lianPdfOverlayV84');
-        if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.id = 'lianPdfOverlayV84';
-            overlay.className = 'lian-pdf-overlay-v84';
-            document.body.appendChild(overlay);
-        }
-        overlay.innerHTML = `
-            <div class="lian-pdf-box-v84">
-                <div class="lian-pdf-spinner-v84"></div>
-                <div class="lian-pdf-title-v84">Menyiapkan PDF...</div>
-                <div class="lian-pdf-subtitle-v84"></div>
-            </div>`;
-        overlay.style.display = 'flex';
-        updateOverlay(message, fileName);
-    }
-
-    function updateOverlay(message, fileName = getFileName()) {
-        const overlay = document.getElementById('lianPdfOverlayV84');
-        if (!overlay) return showOverlay(message, fileName);
-        const subtitle = overlay.querySelector('.lian-pdf-subtitle-v84');
-        if (subtitle) subtitle.innerHTML = `${escapeHtml(fileName)}.pdf<br>${escapeHtml(message)}`;
-    }
-
-    function hideOverlay() {
-        const overlay = document.getElementById('lianPdfOverlayV84');
-        if (overlay) overlay.style.display = 'none';
-    }
-
-    function loadScriptOnce(src, globalCheck, id) {
-        return new Promise((resolve, reject) => {
-            try {
-                if (globalCheck()) return resolve(true);
-
-                const existing = document.getElementById(id);
-                if (existing) {
-                    existing.addEventListener('load', () => resolve(true), { once: true });
-                    existing.addEventListener('error', () => reject(new Error('Gagal memuat library PDF.')), { once: true });
-                    return;
-                }
-
-                const script = document.createElement('script');
-                script.id = id;
-                script.src = src;
-                script.async = true;
-                script.onload = () => resolve(true);
-                script.onerror = () => reject(new Error('Gagal memuat library PDF. Pastikan internet aktif.'));
-                document.head.appendChild(script);
-            } catch (err) {
-                reject(err);
-            }
+            [key, itemName, master?.name, master?.item_name, meta.itemName, meta.item_name]
+                .filter(Boolean)
+                .forEach(candidate => map.set(normV100(candidate), snapshot));
         });
+
+        return map;
     }
 
-    async function ensureLibraries() {
-        await loadScriptOnce(JSPDF_CDN, () => Boolean(window.jspdf?.jsPDF), 'lian-jspdf-v84');
-        await loadScriptOnce(HTML2CANVAS_CDN, () => Boolean(window.html2canvas), 'lian-html2canvas-v84');
-        if (!window.jspdf?.jsPDF) throw new Error('jsPDF belum tersedia.');
-        if (!window.html2canvas) throw new Error('html2canvas belum tersedia.');
+    function appendSnapshotToNoteV100(note = '', snapshot = {}) {
+        if (!snapshot || !snapshot.itemName) return String(note || '');
+
+        const cleanNote = String(note || '').replace(SNAPSHOT_RE, '').trim();
+        const payload = JSON.stringify({
+            itemName: snapshot.itemName,
+            category: snapshot.category || 'Kategori lama',
+            critical_level: snapshot.critical_level || 'Low'
+        });
+
+        return `${cleanNote}${cleanNote ? '\n' : ''}[LIAN_REPORT_SNAPSHOT:${payload}]`;
     }
 
-    function extractGoogleDriveFileId(value) {
-        const text = String(value || '').trim();
-        if (!text) return '';
-        const patterns = [
-            /[?&]id=([^&#]+)/i,
-            /\/d\/([^/]+)/i,
-            /file\/d\/([^/]+)/i,
-            /open\?id=([^&#]+)/i,
-            /uc\?export=view&id=([^&#]+)/i,
-            /uc\?id=([^&#]+)/i,
-            /thumbnail\?id=([^&#]+)/i
-        ];
-        for (const pattern of patterns) {
-            const match = text.match(pattern);
-            if (match && match[1]) return decodeURIComponent(match[1]);
-        }
-        if (/^[a-zA-Z0-9_-]{20,}$/.test(text) && !text.includes('http')) return text;
-        return '';
-    }
+    try {
+        const previousBuildFinalRowsFromDraft = typeof buildFinalRowsFromDraft === 'function'
+            ? buildFinalRowsFromDraft
+            : null;
 
-    function getImageFileId(img) {
-        if (!img) return '';
-        return img.dataset.reportDriveFileId ||
-            img.dataset.driveFileId ||
-            img.dataset.fileId ||
-            extractGoogleDriveFileId(img.getAttribute('src') || img.src || '') ||
-            extractGoogleDriveFileId(img.getAttribute('data-src') || '');
-    }
+        if (previousBuildFinalRowsFromDraft) {
+            buildFinalRowsFromDraft = function (draft) {
+                const result = previousBuildFinalRowsFromDraft.apply(this, arguments);
+                const snapshotMap = buildSnapshotMapV100(getSourceItemsV100(draft));
 
-    async function waitForImages(root, timeout = 26000) {
-        const images = Array.from(root.querySelectorAll('img'))
-            .filter(img => String(img.getAttribute('src') || img.src || '').trim());
-        if (images.length === 0) return;
+                (result?.detailRows || []).forEach(row => {
+                    const itemName = String(row.item_name || row.itemName || '').trim();
+                    if (!itemName || isReportMetaRowV100(itemName)) return;
 
-        await Promise.race([
-            Promise.all(images.map(img => {
-                if (img.complete && img.naturalWidth > 0) return Promise.resolve(true);
-                return new Promise(resolve => {
-                    const done = () => resolve(true);
-                    img.addEventListener('load', done, { once: true });
-                    img.addEventListener('error', done, { once: true });
-                    setTimeout(done, 9000);
+                    const snapshot = snapshotMap.get(normV100(itemName));
+                    if (!snapshot) return;
+
+                    // Pastikan item_name final tetap nama saat submit, bukan ID fallback.
+                    row.item_name = snapshot.itemName || itemName;
+                    row.note = appendSnapshotToNoteV100(row.note || '', snapshot);
                 });
-            })),
-            new Promise(resolve => setTimeout(resolve, timeout))
-        ]);
-    }
 
-    async function hydratePhotosForExport(fileName) {
-        const reportRoot = getReportRoot();
-
-        if (typeof hydrateReportDrivePhotos === 'function') {
-            try {
-                updateOverlay('Memuat foto dokumentasi...', fileName);
-                await hydrateReportDrivePhotos();
-            } catch (err) {
-                console.warn(TAG, 'hydrateReportDrivePhotos gagal, lanjut manual:', err?.message || err);
-            }
+                return result;
+            };
         }
-
-        const driveImages = Array.from(reportRoot.querySelectorAll('img')).filter(img => {
-            const src = String(img.getAttribute('src') || img.src || '').trim();
-            if (!src || src.startsWith('data:image/')) return false;
-            return Boolean(getImageFileId(img)) || src.includes('drive.google.com') || src.includes('googleusercontent.com');
-        });
-
-        let loaded = 0;
-        for (const img of driveImages) {
-            const fileId = getImageFileId(img);
-            if (!fileId || typeof fetchReportPhotoDataUrl !== 'function') continue;
-            try {
-                updateOverlay(`Memuat foto ${loaded + 1}/${driveImages.length}...`, fileName);
-                const dataUrl = await fetchReportPhotoDataUrl(fileId);
-                if (String(dataUrl || '').startsWith('data:image/')) {
-                    img.src = dataUrl;
-                    img.removeAttribute('data-report-drive-file-id');
-                    img.style.display = 'block';
-                    img.closest('a')?.querySelector?.('[data-photo-loading="true"]')?.remove();
-                    img.closest('a')?.querySelector?.('[data-photo-fallback="true"]')?.remove();
-                    loaded += 1;
-                }
-            } catch (err) {
-                console.warn(TAG, 'foto gagal di-inline:', fileId, err?.message || err);
-            }
-        }
-
-        await waitForImages(reportRoot, 26000);
+    } catch (err) {
+        console.warn(TAG, 'patch buildFinalRowsFromDraft dilewati:', err?.message || err);
     }
 
-    function getActualReportWidth(root) {
-        // V90: jangan pakai lebar aktual modal/device.
-        // Jika export dilakukan dari HP, lebar aktual report menjadi mobile layout
-        // dan hasil PDF ikut seperti HP. Kunci export ke lebar desktop report yang lebih zoom-in.
-        return CFG.fixedExportWidthPx || CFG.fallbackReportWidthPx || 780;
-    }
-
-    function applyTextBaselineCorrection(clone) {
-        // V93: perbaikan baseline yang aman.
-        // Masalah sebelumnya: semua text container diubah menjadi flex sehingga ikon indikator berubah bentuk.
-        // Sekarang hanya leaf text yang diangkat sedikit, dan ikon/foto/loading tidak disentuh.
-        if (!clone || typeof clone.querySelectorAll !== 'function') return;
-
-        const textCandidateTags = new Set(['DIV', 'SPAN', 'B', 'STRONG', 'EM', 'SMALL', 'P', 'LABEL', 'H1', 'H2', 'H3', 'H4']);
-        const iconLikeText = new Set(['✓', '—', '-', '•', '●', '🛡️', '🌊', '🔎', '📸', '📷', '⚠️', '✅']);
-
-        clone.querySelectorAll('*').forEach(el => {
-            const tag = el.tagName;
-            if (!textCandidateTags.has(tag)) return;
-            if (el.closest('.report-photo-grid [data-photo-loading="true"], .report-photo-grid [data-photo-fallback="true"]')) return;
-            if (el.closest('.report-guarantee-badge') && el.matches('.report-guarantee-badge > div:first-of-type, .report-guarantee-badge > div:first-of-type *')) return;
-            if (el.closest('svg, canvas, video')) return;
-
-            const rawText = cleanText(el.textContent || '');
-            if (!rawText) return;
-            if (iconLikeText.has(rawText)) return;
-
-            const children = Array.from(el.children || []);
-            const isLeaf = children.length === 0;
-            const hasOnlyInlineTextChildren = children.length > 0 && children.every(child => {
-                const childTag = child.tagName;
-                return ['SPAN', 'B', 'STRONG', 'EM', 'SMALL'].includes(childTag);
-            });
-            const hasLayoutChild = children.some(child => {
-                const display = (window.getComputedStyle(child).display || '').toLowerCase();
-                return display.includes('grid') || display.includes('flex') || display === 'block';
-            });
-            const isSafeTextContainer = hasOnlyInlineTextChildren && !hasLayoutChild && rawText.length <= 160;
-
-            if (!isLeaf && !isSafeTextContainer) return;
-
-            el.classList.add('__lian-export-text-center');
-            el.style.setProperty('position', 'relative', 'important');
-            el.style.setProperty('top', '-3px', 'important');
-            el.style.setProperty('line-height', '1.28', 'important');
-            el.style.setProperty('vertical-align', 'middle', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-        });
-    }
-
-    function wrapElementContentsForLift(el, className) {
-        if (!el || el.querySelector(`:scope > .${className}`)) return null;
-        const wrapper = document.createElement('span');
-        wrapper.className = className;
-        while (el.firstChild) wrapper.appendChild(el.firstChild);
-        el.appendChild(wrapper);
-        return wrapper;
-    }
-
-    function wrapTextNodesAfterIconForLift(el, className) {
-        if (!el || el.querySelector(`:scope > .${className}`)) return null;
-        const textNodes = Array.from(el.childNodes || []).filter(node => {
-            return node.nodeType === Node.TEXT_NODE && cleanText(node.nodeValue || '');
-        });
-        if (!textNodes.length) return null;
-        const wrapper = document.createElement('span');
-        wrapper.className = className;
-        el.insertBefore(wrapper, textNodes[0]);
-        textNodes.forEach(node => wrapper.appendChild(node));
-        return wrapper;
-    }
-
-
-    function ensureFooterSafeBottomV98(clone) {
-        if (!clone || typeof clone.querySelectorAll !== 'function') return;
-
-        // Hapus spacer lama agar tidak dobel karena normalizeCloneForLongPdf dipanggil lagi pada onclone html2canvas.
-        clone.querySelectorAll('.__lian-export-footer-spacer-v98').forEach(el => el.remove());
-
-        // Tandai card footer terakhir supaya tidak terpotong secara internal.
-        const directChildren = Array.from(clone.children || []);
-        const footerCard = directChildren.slice().reverse().find(el => {
-            const text = cleanText(el.textContent || '');
-            const style = String(el.getAttribute('style') || '').toLowerCase();
-            return text.includes('Lian Inspector') || style.includes('#0f172a') || style.includes('background:#0f172a');
-        });
-
-        if (footerCard) {
-            footerCard.classList.add('__lian-export-footer-card-v98');
-            footerCard.style.setProperty('overflow', 'visible', 'important');
-            footerCard.style.setProperty('min-height', '42px', 'important');
-            footerCard.style.setProperty('margin-bottom', '0', 'important');
-        }
-
-        const spacer = document.createElement('div');
-        spacer.className = '__lian-export-footer-spacer-v98';
-        spacer.setAttribute('aria-hidden', 'true');
-        spacer.style.cssText = `display:block;height:${CFG.footerSafeExtraPx || 44}px;min-height:${CFG.footerSafeExtraPx || 44}px;width:100%;background:#ffffff;clear:both;`;
-        clone.appendChild(spacer);
-    }
-
-    function applyTargetedMicroAdjustmentsV97(clone) {
-        if (!clone || typeof clone.querySelectorAll !== 'function') return;
-
-        // 1) Dokumen & Aksesoris: isi chip diturunkan kembali 1px dari V96 (net naik ±1px), agar tepat di tengah.
-        clone.querySelectorAll('.report-completeness-grid span').forEach(chip => {
-            const marker = chip.querySelector(':scope > b');
-            if (!marker) return;
-            wrapElementContentsForLift(chip, '__lian-chip-inner-lift');
-        });
-
-        // 2) Indikator Bebas Tabrak/Banjir/Nomor Rangka: naikkan ikon saja ±5px,
-        // lingkaran tetap di posisi dan bentuk aslinya.
-        clone.querySelectorAll('.report-guarantee-badge > div:first-of-type').forEach(iconCircle => {
-            wrapElementContentsForLift(iconCircle, '__lian-guarantee-icon-lift');
-        });
-
-        // 3) Penilaian Akhir: 64% diturunkan 2px dari V96 (net naik ±4px), Grade D tetap di posisi V96.
-        const scoreEl = clone.querySelector('#reportEditableScorePercent');
-        if (scoreEl) {
-            scoreEl.classList.add('__lian-final-score-lift');
-            const percentEl = scoreEl.nextElementSibling;
-            if (percentEl && cleanText(percentEl.textContent || '') === '%') {
-                percentEl.classList.add('__lian-final-score-lift');
-            }
-        }
-        const gradeEl = clone.querySelector('#reportEditableScoreGrade');
-        if (gradeEl) gradeEl.classList.add('__lian-final-grade-lift');
-
-        // 3b) Temuan Penting: teks chip Rusak/Perhatian dinaikkan ±0.7px di dalam chip.
-        clone.querySelectorAll('.report-findings-grid > div > div:first-child > div:last-child').forEach(statusChip => {
-            const text = cleanText(statusChip.textContent || '');
-            if (/Rusak|Perhatian/i.test(text)) {
-                wrapElementContentsForLift(statusChip, '__lian-finding-chip-inner-lift');
-            }
-        });
-
-        // 4) Poin Inspeksi: judul utama naik ±3px.
-        clone.querySelectorAll('div').forEach(el => {
-            const text = cleanText(el.textContent || '');
-            const children = Array.from(el.children || []);
-            const isSimpleText = children.length === 0 || children.every(child => child.tagName === 'SPAN');
-            if (text === 'Poin Inspeksi' && !el.closest('.report-point-section') && isSimpleText) {
-                wrapElementContentsForLift(el, '__lian-point-main-title-lift');
-            }
-        });
-
-        // 5) Legend: teksnya saja naik ±2px agar sejajar dengan dot warna.
-        clone.querySelectorAll('.report-point-legend > span').forEach(item => {
-            wrapTextNodesAfterIconForLift(item, '__lian-legend-label-lift');
-        });
-
-        // 6) Judul kategori Poin Inspeksi — interior/Lainnya naik ±3px.
-        clone.querySelectorAll('.report-point-section > div:first-child').forEach(titleBar => {
-            wrapElementContentsForLift(titleBar, '__lian-point-section-title-lift');
-        });
-
-        // 7) Judul Foto Dokumentasi naik ±3px, tanpa mengubah grid/foto.
-        clone.querySelectorAll('div').forEach(el => {
-            const text = cleanText(el.textContent || '');
-            const isPhotoTitle = text.includes('Foto Dokumentasi') && !el.closest('.report-photo-card');
-            if (!isPhotoTitle) return;
-            const children = Array.from(el.children || []);
-            if (children.length > 1) return;
-            wrapElementContentsForLift(el, '__lian-photo-title-lift');
-        });
-    }
-
-    function normalizeCloneForLongPdf(clone, widthPx) {
-        clone.style.width = `${widthPx}px`;
-        clone.style.maxWidth = `${widthPx}px`;
-        clone.style.minWidth = `${widthPx}px`;
-        clone.style.margin = '0';
-        // V99: beri napas header atas 5px dan kiri-kanan 2px tanpa mengubah layout utama.
-        clone.style.setProperty('padding', `${CFG.headerSafeTopPx || 5}px ${CFG.headerSafeSidePx || 2}px 0 ${CFG.headerSafeSidePx || 2}px`, 'important');
-        clone.style.setProperty('--lian-export-width', `${widthPx}px`);
-        clone.style.background = CFG.backgroundColor;
-        clone.style.overflow = 'visible';
-        clone.style.transform = 'none';
-
-        // Hapus tombol/badge editor yang tidak perlu tercetak kalau ada.
-        clone.querySelectorAll('.report-remove-badge, .report-no-print').forEach(el => el.remove());
-
-        // V93: setelah foto berhasil dihydrate, placeholder loading/fallback tidak boleh ikut tercapture.
-        clone.querySelectorAll('[data-photo-loading="true"], [data-photo-fallback="true"]').forEach(el => el.remove());
-
-        // Pastikan tidak ada lazy image yang belum kebaca.
-        // Penting: foto dokumentasi kendaraan tidak boleh di-stretch/crop paksa.
-        clone.querySelectorAll('img').forEach(img => {
-            img.setAttribute('loading', 'eager');
-            img.style.setProperty('max-width', '100%', 'important');
-        });
-        clone.querySelectorAll('.report-photo-card img').forEach(img => {
-            img.style.setProperty('width', '100%', 'important');
-            img.style.setProperty('height', 'auto', 'important');
-            img.style.setProperty('min-height', '0', 'important');
-            img.style.setProperty('max-height', 'none', 'important');
-            img.style.setProperty('aspect-ratio', 'auto', 'important');
-            img.style.setProperty('object-fit', 'contain', 'important');
-            img.style.setProperty('object-position', 'center center', 'important');
-            img.style.setProperty('display', 'block', 'important');
-        });
-
-        // Kunci layout desktop agar hasil export tidak berubah saat dibuka dari HP.
-        const forceGrid = (selector, columns, gap = null) => {
-            clone.querySelectorAll(selector).forEach(el => {
-                el.style.setProperty('display', 'grid', 'important');
-                el.style.setProperty('grid-template-columns', columns, 'important');
-                if (gap) el.style.setProperty('gap', gap, 'important');
-            });
-        };
-
-        forceGrid('.report-top', 'minmax(0, 1fr) minmax(215px, 300px)', '14px');
-        forceGrid('.report-client-bar', 'minmax(0, 1fr) minmax(0, .85fr)', '10px');
-        forceGrid('.report-vehicle-grid', '1fr 1fr');
-        forceGrid('.report-completeness-grid', '1.3fr .9fr', '10px');
-        forceGrid('.report-badges', 'repeat(3, minmax(0, 1fr))', '10px');
-        forceGrid('.report-category-grid', 'repeat(2, minmax(0, 1fr))', '12px');
-        forceGrid('.report-findings-grid', 'repeat(3, minmax(0, 1fr))', '10px');
-        forceGrid('.report-point-grid', '1fr 1fr');
-        forceGrid('.report-photo-grid', 'repeat(2, minmax(0, 1fr))', '16px');
-
-        clone.querySelectorAll('.report-top img').forEach(img => {
-            img.style.setProperty('height', '72px', 'important');
-            img.style.setProperty('max-width', '260px', 'important');
-        });
-
-        clone.querySelectorAll('.report-detail-box').forEach(el => {
-            el.style.setProperty('min-width', '215px', 'important');
-            el.style.setProperty('width', 'auto', 'important');
-        });
-
-        clone.querySelectorAll('.report-vehicle-grid > div').forEach((el, index) => {
-            el.style.setProperty('padding', '16px 20px', 'important');
-            el.style.setProperty('border-bottom', '0', 'important');
-            el.style.setProperty('border-right', index === 0 ? '1px solid #0f172a33' : '0', 'important');
-        });
-
-        // V91: normalisasi layout export agar teks tidak jatuh ke bawah saat di-capture.
-        clone.querySelectorAll('.report-client-bar').forEach(el => {
-            el.style.setProperty('min-height', '42px', 'important');
-            el.style.setProperty('padding-top', '10px', 'important');
-            el.style.setProperty('padding-bottom', '10px', 'important');
-            el.style.setProperty('align-items', 'center', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-        });
-        clone.querySelectorAll('.report-client-bar > div').forEach(el => {
-            el.style.setProperty('display', 'flex', 'important');
-            el.style.setProperty('align-items', 'center', 'important');
-            el.style.setProperty('min-height', '22px', 'important');
-            el.style.setProperty('line-height', '1.36', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-            el.style.setProperty('transform', 'translateY(-2.2px)', 'important');
-        });
-        clone.querySelectorAll('.report-detail-box > div, .report-field-row').forEach(el => {
-            el.style.setProperty('min-height', '22px', 'important');
-            el.style.setProperty('align-items', 'center', 'important');
-            el.style.setProperty('line-height', '1.36', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-        });
-        clone.querySelectorAll('.report-field-row > b, .report-field-row > span').forEach(el => {
-            el.style.setProperty('line-height', '1.36', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-        });
-        clone.querySelectorAll('.report-completeness-grid span').forEach(el => {
-            el.style.setProperty('min-height', '23px', 'important');
-            el.style.setProperty('line-height', '1.25', 'important');
-            el.style.setProperty('align-items', 'center', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-        });
-        clone.querySelectorAll('.report-guarantee-badge').forEach(el => {
-            el.style.setProperty('text-align', 'center', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-        });
-        clone.querySelectorAll('.report-guarantee-badge > div:first-of-type').forEach(el => {
-            el.style.setProperty('width', '44px', 'important');
-            el.style.setProperty('height', '44px', 'important');
-            el.style.setProperty('min-width', '44px', 'important');
-            el.style.setProperty('max-width', '44px', 'important');
-            el.style.setProperty('min-height', '44px', 'important');
-            el.style.setProperty('max-height', '44px', 'important');
-            el.style.setProperty('border-radius', '999px', 'important');
-            el.style.setProperty('display', 'flex', 'important');
-            el.style.setProperty('align-items', 'center', 'important');
-            el.style.setProperty('justify-content', 'center', 'important');
-            el.style.setProperty('margin-left', 'auto', 'important');
-            el.style.setProperty('margin-right', 'auto', 'important');
-            el.style.setProperty('margin-bottom', '8px', 'important');
-            el.style.setProperty('line-height', '1', 'important');
-            el.style.setProperty('overflow', 'hidden', 'important');
-            el.style.setProperty('transform', 'none', 'important');
-        });
-        clone.querySelectorAll('.report-guarantee-badge > div:not(:first-of-type)').forEach(el => {
-            el.style.setProperty('line-height', '1.28', 'important');
-            el.style.setProperty('overflow', 'visible', 'important');
-            el.style.removeProperty('transform');
-        });
-
-        applyTextBaselineCorrection(clone);
-        applyTargetedMicroAdjustmentsV97(clone);
-        ensureFooterSafeBottomV98(clone);
-    }
-
-    function createExportClone() {
-        const root = getReportRoot();
-        const widthPx = getActualReportWidth(root);
-        const clone = root.cloneNode(true);
-
-        const sandbox = document.createElement('div');
-        sandbox.className = 'lian-pdf-export-sandbox-v84';
-        sandbox.style.width = `${widthPx}px`;
-
-        normalizeCloneForLongPdf(clone, widthPx);
-        sandbox.appendChild(clone);
-        document.body.appendChild(sandbox);
-
-        return { sandbox, clone, widthPx };
-    }
-
-    function removeExportClone(sandbox) {
-        try {
-            if (sandbox?.parentNode) sandbox.parentNode.removeChild(sandbox);
-        } catch (_) {}
-    }
-
-    async function renderLongCanvas(clone, widthPx) {
-        await waitForImages(clone, 26000);
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-
-        const measuredHeight = Math.max(
-            clone.scrollHeight || 0,
-            clone.offsetHeight || 0,
-            clone.getBoundingClientRect().height || 0,
-            1
-        );
-        const heightPx = Math.ceil(measuredHeight + Math.max(0, CFG.footerSafeExtraPx || 0));
-
-        return window.html2canvas(clone, {
-            backgroundColor: CFG.backgroundColor,
-            scale: CFG.canvasScale,
-            useCORS: true,
-            allowTaint: true,
-            logging: false,
-            imageTimeout: 26000,
-            width: widthPx,
-            height: heightPx,
-            windowWidth: Math.max(widthPx, CFG.renderWindowWidthPx || widthPx),
-            windowHeight: Math.max(heightPx, 1600),
-            scrollX: 0,
-            scrollY: 0,
-            onclone: (doc) => {
-                const clonedRoot = doc.querySelector('.lian-pdf-export-sandbox-v84 .report-v25') ||
-                    doc.querySelector('.lian-pdf-export-sandbox-v84 > *');
-                if (clonedRoot) normalizeCloneForLongPdf(clonedRoot, widthPx);
-            }
-        });
-    }
-
-    function calculateLongPdfSize(canvas) {
-        const pdfW = CFG.pdfWidthMm;
-        const padding = CFG.pdfSafePaddingMm;
-        const contentW = pdfW - padding * 2;
-        let contentH = (canvas.height / canvas.width) * contentW;
-        contentH = Math.max(1, contentH);
-
-        let pdfH = contentH + padding * 2;
-        pdfH = Math.max(CFG.minPdfHeightMm, Math.min(CFG.maxPdfHeightMm, pdfH));
-
-        // Kalau sangat panjang dan mencapai limit PDF, skalakan tinggi konten agar tetap masuk.
-        if (contentH + padding * 2 > CFG.maxPdfHeightMm) {
-            contentH = CFG.maxPdfHeightMm - padding * 2;
-            pdfH = CFG.maxPdfHeightMm;
-        }
-
-        return { pdfW, pdfH, padding, contentW, contentH };
-    }
-
-    async function exportPdf() {
-        const fileName = getFileName();
-        let sandbox = null;
-
-        showOverlay('Menyiapkan library PDF...', fileName);
-        try {
-            await ensureLibraries();
-            await hydratePhotosForExport(fileName);
-
-            updateOverlay('Mengambil tampilan penuh report...', fileName);
-            const cloneInfo = createExportClone();
-            sandbox = cloneInfo.sandbox;
-            const clone = cloneInfo.clone;
-            const widthPx = cloneInfo.widthPx;
-
-            updateOverlay('Membuat screen capture...', fileName);
-            const canvas = await renderLongCanvas(clone, widthPx);
-            const imgData = canvas.toDataURL('image/jpeg', CFG.jpegQuality);
-            const size = calculateLongPdfSize(canvas);
-
-            updateOverlay('Membuat file PDF...', fileName);
-            const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF({
-                orientation: 'portrait',
-                unit: 'mm',
-                format: [size.pdfW, size.pdfH],
-                compress: true
-            });
-
-            pdf.setProperties({
-                title: fileName,
-                subject: 'Laporan Inspeksi Kendaraan - Long Screenshot PDF',
-                creator: 'LianInspector'
-            });
-
-            pdf.addImage(
-                imgData,
-                'JPEG',
-                size.padding,
-                size.padding,
-                size.contentW,
-                size.contentH,
-                undefined,
-                'FAST'
-            );
-            pdf.save(`${fileName}.pdf`);
-
-            if (typeof showToast === 'function') {
-                showToast('✓ PDF berhasil dibuat dari tampilan report');
-            }
-        } catch (err) {
-            console.error(TAG, 'export gagal:', err);
-            if (typeof showToast === 'function') showToast('Gagal export PDF: ' + (err?.message || err), 'error');
-            else alert('Gagal export PDF: ' + (err?.message || err));
-        } finally {
-            removeExportClone(sandbox);
-            hideOverlay();
-        }
-    }
-
-    function replaceButton(button, html, className, handler) {
-        if (!button || !button.parentNode) return null;
-        const clone = button.cloneNode(false);
-        clone.id = button.id;
-        clone.className = className || button.className;
-        clone.innerHTML = html;
-        clone.addEventListener('click', handler || exportPdf);
-        button.parentNode.replaceChild(clone, button);
-        return clone;
-    }
-
-    function configureButtons(options = {}) {
-        const handler = options.exportHandler || function (event) {
-            if (event) event.preventDefault();
-            exportPdf();
-        };
-
-        const printBtn = document.getElementById('printReportBtn');
-        const downloadBtn = document.getElementById('downloadReportBtn');
-        const closeBtn = document.getElementById('closeReportBtnAction');
-
-        if (printBtn) printBtn.style.display = 'none';
-
-        replaceButton(
-            downloadBtn,
-            '<i data-lucide="file-down" style="width:18px;height:18px;"></i><span>Export PDF</span>',
-            'flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-bold transition-all shadow-lg',
-            handler
-        );
-
-        replaceButton(
-            closeBtn,
-            '<span>Tutup</span>',
-            'flex-1 px-4 py-3 border-2 border-gray-300 text-gray-700 hover:bg-gray-100 rounded-xl font-bold transition-all bg-white',
-            function (event) {
-                event.preventDefault();
-                if (typeof closeReportModalAction === 'function') closeReportModalAction(event);
-            }
-        );
-
-        try { if (window.lucide) lucide.createIcons(); } catch (_) {}
-    }
-
-    window.LianReportPdf = {
-        exportPdf,
-        configureButtons,
-        getFileName,
-        version: 'v99-header-safe-spacing-export-pdf'
-    };
-
-    ensureUiStyle();
-    setTimeout(() => configureButtons(), 250);
-    console.log('✅ report-pdf.js v99 header safe spacing loaded');
+    console.log('✅ offline-sync.js v100 report detail snapshot loaded');
 })();
