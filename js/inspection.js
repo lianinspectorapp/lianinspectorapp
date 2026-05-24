@@ -1881,6 +1881,9 @@ async function restoreOfflineDraft(options = {}) {
             img.src = finalSrc;
             img.alt = label || 'Preview foto dokumentasi';
             img.className = 'max-w-full max-h-[94vh] object-contain rounded-xl shadow-2xl bg-black';
+            img.style.touchAction = 'none';
+            img.style.transformOrigin = 'center center';
+            img.style.transition = 'transform .12s ease-out';
 
             const closeBtn = document.createElement('button');
             closeBtn.type = 'button';
@@ -1902,6 +1905,49 @@ async function restoreOfflineDraft(options = {}) {
             });
             img.addEventListener('click', (event) => event.stopPropagation());
             box.addEventListener('click', (event) => event.stopPropagation());
+
+            // V117: khusus preview foto report, tambahkan pinch zoom dua jari tanpa mengubah UI V114.
+            let reportPreviewScale = 1;
+            let reportPreviewStartScale = 1;
+            let reportPreviewStartDistance = 0;
+            const clampReportPreviewScale = (value) => Math.max(1, Math.min(4, Number(value) || 1));
+            const getTouchDistance = (touches) => {
+                if (!touches || touches.length < 2) return 0;
+                const dx = touches[0].clientX - touches[1].clientX;
+                const dy = touches[0].clientY - touches[1].clientY;
+                return Math.sqrt((dx * dx) + (dy * dy));
+            };
+            const applyReportPreviewZoom = () => {
+                img.style.transform = reportPreviewScale > 1 ? `scale(${reportPreviewScale})` : 'scale(1)';
+            };
+
+            img.addEventListener('touchstart', (event) => {
+                if (event.touches.length === 2) {
+                    reportPreviewStartDistance = getTouchDistance(event.touches);
+                    reportPreviewStartScale = reportPreviewScale;
+                    img.style.transition = 'none';
+                    event.preventDefault();
+                }
+            }, { passive: false });
+
+            img.addEventListener('touchmove', (event) => {
+                if (event.touches.length === 2 && reportPreviewStartDistance > 0) {
+                    const currentDistance = getTouchDistance(event.touches);
+                    reportPreviewScale = clampReportPreviewScale(reportPreviewStartScale * (currentDistance / reportPreviewStartDistance));
+                    applyReportPreviewZoom();
+                    event.preventDefault();
+                }
+            }, { passive: false });
+
+            img.addEventListener('touchend', () => {
+                if (reportPreviewScale <= 1.02) {
+                    reportPreviewScale = 1;
+                    img.style.transition = 'transform .12s ease-out';
+                    applyReportPreviewZoom();
+                }
+                reportPreviewStartDistance = 0;
+            });
+
             closeBtn.addEventListener('click', () => overlay.remove());
             document.addEventListener('keydown', function escHandler(event) {
                 if (event.key === 'Escape') {
