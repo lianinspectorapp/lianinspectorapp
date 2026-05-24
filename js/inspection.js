@@ -1860,46 +1860,117 @@ async function restoreOfflineDraft(options = {}) {
 
         const REPORT_PHOTO_CACHE = window.__REPORT_PHOTO_CACHE || (window.__REPORT_PHOTO_CACHE = new Map());
 
+        function openReportPhotoPreview(src, label = 'Foto Dokumentasi') {
+            const finalSrc = String(src || '').trim();
+            if (!finalSrc) {
+                showToast('Foto masih dimuat. Coba klik lagi sebentar.', 'error');
+                return;
+            }
+
+            const existing = document.getElementById('reportPhotoPreviewOverlay');
+            if (existing) existing.remove();
+
+            const overlay = document.createElement('div');
+            overlay.id = 'reportPhotoPreviewOverlay';
+            overlay.className = 'fixed inset-0 z-[1000001] bg-black/90 flex items-center justify-center p-3 sm:p-5';
+
+            const box = document.createElement('div');
+            box.className = 'relative w-full h-full max-w-6xl max-h-[94vh] flex items-center justify-center';
+
+            const img = document.createElement('img');
+            img.src = finalSrc;
+            img.alt = label || 'Preview foto dokumentasi';
+            img.className = 'max-w-full max-h-[94vh] object-contain rounded-xl shadow-2xl bg-black';
+
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.innerHTML = '×';
+            closeBtn.setAttribute('aria-label', 'Tutup preview foto');
+            closeBtn.className = 'absolute top-2 right-2 sm:-top-3 sm:-right-3 w-10 h-10 rounded-full bg-white text-gray-900 font-black shadow-lg flex items-center justify-center text-xl';
+
+            const captionBox = document.createElement('div');
+            captionBox.textContent = label || 'Foto Dokumentasi';
+            captionBox.className = 'absolute left-2 bottom-2 right-2 sm:left-4 sm:bottom-4 sm:right-4 bg-black/55 text-white rounded-xl px-3 py-2 text-xs sm:text-sm font-bold text-center';
+
+            box.appendChild(img);
+            box.appendChild(closeBtn);
+            box.appendChild(captionBox);
+            overlay.appendChild(box);
+
+            overlay.addEventListener('click', (event) => {
+                if (event.target === overlay) overlay.remove();
+            });
+            img.addEventListener('click', (event) => event.stopPropagation());
+            box.addEventListener('click', (event) => event.stopPropagation());
+            closeBtn.addEventListener('click', () => overlay.remove());
+            document.addEventListener('keydown', function escHandler(event) {
+                if (event.key === 'Escape') {
+                    overlay.remove();
+                    document.removeEventListener('keydown', escHandler);
+                }
+            });
+
+            document.body.appendChild(overlay);
+        }
+
+        function openReportPhotoPreviewFromTrigger(trigger) {
+            const card = trigger?.closest?.('.report-photo-card') || trigger;
+            const img = card?.querySelector?.('img');
+            const src = img?.currentSrc || img?.src || '';
+            const isVisible = !!src && img && img.style.display !== 'none';
+            const label = trigger?.dataset?.reportPhotoLabel || img?.alt || 'Foto Dokumentasi';
+
+            if (!isVisible) {
+                showToast('Foto masih dimuat. Coba klik lagi sebentar.', 'error');
+                return;
+            }
+
+            openReportPhotoPreview(src, label);
+        }
+
+        function bindReportPhotoPreviewEvents() {
+            document.querySelectorAll('.report-photo-preview-trigger').forEach(trigger => {
+                if (trigger.dataset.previewBound === 'true') return;
+                trigger.dataset.previewBound = 'true';
+                trigger.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openReportPhotoPreviewFromTrigger(trigger);
+                });
+            });
+        }
+
         function buildReportPhotoHtml(photo, index = 0, caption = '') {
             const localSrc = getPhotoSrc(photo);
             const fileId = getPhotoFileId(photo);
-            const openUrl = getPhotoOpenUrl(photo) || localSrc;
             const label = caption || `Foto ${index + 1}`;
-            const safeOpenUrl = escapeAttr(openUrl || '#');
             const safeLabel = escapeHtml(label);
             const safeAttrLabel = escapeAttr(label);
             const captionHtml = buildCaptionHtml(label, `Foto ${index + 1}`);
 
-            const isLocalData = localSrc && String(localSrc).startsWith('data:image/');
-
-            if (!fileId && !isLocalData) {
-                return `
-                    <a href="${safeOpenUrl}" target="_blank" rel="noopener" style="min-height: 180px; border: 1px dashed #cbd5e1; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: #f8fafc; color: #1e40af; font-size: 12px; font-weight: 850; text-align: center; padding: 12px; break-inside: avoid; text-decoration:none;">
-                        <span style="font-size:26px;margin-right:8px;">📷</span>
-                        <span>${safeLabel}<br><span style="font-weight:650;color:#64748b;">Buka foto asli</span></span>
-                    </a>
-                `;
-            }
-
-            const imgAttr = isLocalData
+            const canUseDirectSrc = localSrc && !fileId;
+            const imgAttr = canUseDirectSrc
                 ? `src="${escapeAttr(localSrc)}"`
                 : `src="" data-report-drive-file-id="${escapeAttr(fileId)}" data-report-photo-label="${safeAttrLabel}"`;
+            const showImage = canUseDirectSrc;
+            const showLoading = fileId && !canUseDirectSrc;
+            const showFallback = !fileId && !canUseDirectSrc;
 
             return `
-                <div class="report-photo-card" style="background:#ffffff; border:1px solid #dbeafe; border-radius:16px; overflow:hidden; box-shadow:0 8px 22px rgba(15,23,42,.08); break-inside:avoid; page-break-inside:avoid;">
-                    <a href="${safeOpenUrl}" target="_blank" rel="noopener" style="display:block;text-decoration:none;color:inherit;position:relative;background:#eff6ff;">
-                        <img ${imgAttr} alt="${safeAttrLabel}" style="display:${isLocalData ? 'block' : 'none'}; width:100%; height:240px; object-fit:cover; background:#e5e7eb;">
-                        <div data-photo-loading="true" style="display:${isLocalData ? 'none' : 'flex'}; min-height:240px; align-items:center; justify-content:center; flex-direction:column; gap:9px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
+                <div class="report-photo-card" style="background:#ffffff; border:1px solid #dbeafe; border-radius:16px; overflow:hidden; box-shadow:0 8px 22px rgba(15,23,42,.08); break-inside:avoid; page-break-inside:avoid; min-width:0;">
+                    <button type="button" class="report-photo-preview-trigger" data-report-photo-label="${safeAttrLabel}" style="display:block;width:100%;padding:0;border:0;text-align:left;color:inherit;position:relative;background:#eff6ff;cursor:pointer;">
+                        <img ${imgAttr} alt="${safeAttrLabel}" style="display:${showImage ? 'block' : 'none'}; width:100%; height:clamp(150px, 25vw, 240px); object-fit:cover; background:#e5e7eb;">
+                        <div data-photo-loading="true" style="display:${showLoading ? 'flex' : 'none'}; min-height:clamp(150px, 25vw, 240px); align-items:center; justify-content:center; flex-direction:column; gap:9px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
                             <span class="lian-report-photo-spinner" aria-hidden="true" style="width:34px;height:34px;border-radius:999px;border:4px solid #bfdbfe;border-top-color:#1d4ed8;display:inline-block;animation:lianReportPhotoSpin .75s linear infinite;"></span>
                             <span>Memuat foto...</span>
                             <span style="font-size:11px;font-weight:650;color:#64748b;">${safeLabel}</span>
                         </div>
-                        <div data-photo-fallback="true" style="display:none; min-height:240px; align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
+                        <div data-photo-fallback="true" style="display:${showFallback ? 'flex' : 'none'}; min-height:clamp(150px, 25vw, 240px); align-items:center; justify-content:center; flex-direction:column; gap:7px; color:#1e40af; font-size:12px; font-weight:850; text-align:center; padding:14px;">
                             <span style="font-size:30px;">📷</span>
                             <span>${safeLabel}</span>
-                            <span style="font-size:11px;font-weight:650;color:#64748b;">Klik untuk buka foto asli</span>
+                            <span style="font-size:11px;font-weight:650;color:#64748b;">Foto belum tersedia untuk preview</span>
                         </div>
-                    </a>
+                    </button>
                     <div style="padding:10px 12px;border-top:1px solid #e5e7eb;line-height:1.35;font-size:12px;">
                         ${captionHtml}
                     </div>
@@ -2033,6 +2104,7 @@ async function restoreOfflineDraft(options = {}) {
                 const dataUrl = await fetchReportPhotoDataUrl(fileId);
                 img.src = dataUrl;
                 img.style.display = 'block';
+                img.closest('.report-photo-card')?.setAttribute('data-photo-ready', 'true');
                 if (loading) loading.style.display = 'none';
                 if (fallback) fallback.style.display = 'none';
             } catch (err) {
@@ -2081,6 +2153,7 @@ async function restoreOfflineDraft(options = {}) {
             }
 
             await runWithConcurrency(images, 4, hydrateSingleReportPhoto);
+            bindReportPhotoPreviewEvents();
             console.log('✅ Foto laporan selesai');
         }
 
@@ -3000,6 +3073,10 @@ async function restoreOfflineDraft(options = {}) {
                     if (e.target === modal) closeReportModalAction();
                 });
             }
+
+            if (typeof bindReportPhotoPreviewEvents === 'function') {
+                bindReportPhotoPreviewEvents();
+            }
         }
 
         function closeReportModalAction(e) {
@@ -3635,7 +3712,7 @@ async function restoreOfflineDraft(options = {}) {
             const photoSectionHtml = photoRows.length > 0 ? `
                 <div style="margin-top:18px; break-inside:avoid;">
                     <div style="background:#1e3a8a; color:white; padding:12px 16px; border-radius:16px; font-size:16px; font-weight:950; text-align:center; margin-bottom:12px;">📸 Foto Dokumentasi</div>
-                    <div class="report-photo-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">
+                    <div class="report-photo-grid" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px;">
                         ${photoRows.map((row, idx) => buildReportPhotoHtml(row.photo, idx, row.caption)).join('')}
                     </div>
                 </div>` : `<div style="background:#f8fafc; border:1px dashed #cbd5e1; border-radius:16px; padding:18px; text-align:center; color:#64748b; font-size:13px; font-weight:800;">📷 Belum ada foto dokumentasi pada laporan ini.</div>`;
@@ -3656,8 +3733,7 @@ async function restoreOfflineDraft(options = {}) {
                         .report-v25 .report-completeness-grid,
                         .report-v25 .report-category-grid,
                         .report-v25 .report-findings-grid,
-                        .report-v25 .report-point-grid,
-                        .report-v25 .report-photo-grid { grid-template-columns:1fr !important; }
+                        .report-v25 .report-point-grid { grid-template-columns:1fr !important; }
                         .report-v25 .report-top { gap:10px !important; }
                         .report-v25 .report-top img { height:58px !important; max-width:210px !important; }
                         .report-v25 .report-detail-box { min-width:0 !important; width:100% !important; }
@@ -3668,6 +3744,12 @@ async function restoreOfflineDraft(options = {}) {
                         .report-v25 .report-badges { grid-template-columns:repeat(3,minmax(0,1fr)) !important; gap:6px !important; }
                         .report-v25 .report-guarantee-badge { padding:5px !important; border-radius:12px !important; }
                         .report-v25 .report-guarantee-badge img { width:100% !important; max-width:100% !important; height:auto !important; object-fit:contain !important; }
+                        .report-v25 .report-photo-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important; }
+                        .report-v25 .report-photo-card { border-radius:12px !important; }
+                        .report-v25 .report-photo-card img,
+                        .report-v25 .report-photo-card [data-photo-loading="true"],
+                        .report-v25 .report-photo-card [data-photo-fallback="true"] { height:150px !important; min-height:150px !important; }
+                        .report-v25 .report-photo-card > div:last-child { padding:8px 9px !important; font-size:10.8px !important; }
                         .report-v25 .report-point-row { grid-template-columns:minmax(0,1fr) 18px !important; }
                     }
                 </style>
