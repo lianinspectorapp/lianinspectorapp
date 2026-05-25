@@ -1177,37 +1177,82 @@ console.log('✅ INITIAL RENDER SELESAI');
         });
 
         document.getElementById('createAdminBtn')?.addEventListener('click', async () => {
-            const button = document.getElementById('createAdminBtn');
-            const username = document.getElementById('adminUsername').value.trim();
-            const password = document.getElementById('adminPassword').value.trim();
+    const button = document.getElementById('createAdminBtn');
+    const username = document.getElementById('adminUsername').value.trim();
+    const password = document.getElementById('adminPassword').value.trim();
 
-            if (!username || !password) {
-                showLoginErrorState('Username dan password wajib diisi.');
-                showToast('Username dan password wajib diisi', 'error');
-                return;
-            }
+    if (!username || !password) {
+        if (typeof showLoginErrorState === 'function') {
+            showLoginErrorState('Username dan password wajib diisi.');
+        }
+        showToast('Username dan password wajib diisi', 'error');
+        return;
+    }
 
-            setButtonLoading(button, true);
+    setButtonLoading(button, true);
 
-           const newAdmin = {
-  username: username,
-  password: password,
-  role: 'admin'
-};
-            
-            if (error) {
-    console.error('❌ Admin creation failed:', error);
-    showToast('Gagal membuat akun admin', 'error');
-} else {
-    console.log('✅ Admin created successfully');
-    showToast('✓ Akun admin berhasil dibuat! Silakan login.');
+    try {
+        const { data: existingAdmin, error: checkError } = await supabaseClient
+            .from('users')
+            .select('*')
+            .eq('role', 'admin')
+            .maybeSingle();
 
-    document.getElementById('adminSetupForm').classList.add('hidden');
-    document.getElementById('setupOrLogin').classList.remove('hidden');
-    document.getElementById('adminUsername').value = '';
-    document.getElementById('adminPassword').value = '';
-}
-        });
+        if (checkError) {
+            console.error('CHECK ADMIN ERROR:', checkError);
+            showToast('Gagal mengecek data admin', 'error');
+            return;
+        }
+
+        if (existingAdmin) {
+            showToast('Admin sudah ada', 'error');
+            return;
+        }
+
+        const newAdmin = {
+            username: username,
+            password: password,
+            role: 'admin'
+        };
+
+        const { error: insertError } = await supabaseClient
+            .from('users')
+            .insert([newAdmin]);
+
+        if (insertError) {
+            console.error('❌ Admin creation failed:', insertError);
+            showToast('Gagal membuat akun admin', 'error');
+            return;
+        }
+
+        console.log('✅ Admin created successfully');
+        showToast('✓ Akun admin berhasil dibuat! Silakan login.');
+
+        document.getElementById('adminSetupForm')?.classList.add('hidden');
+        document.getElementById('setupOrLogin')?.classList.remove('hidden');
+
+        document.getElementById('adminUsername').value = '';
+        document.getElementById('adminPassword').value = '';
+
+        if (typeof loadInitialData === 'function') {
+            await loadInitialData();
+        }
+
+        if (typeof checkAdminExists === 'function') {
+            checkAdminExists();
+        }
+
+        if (typeof renderQuickLogin === 'function') {
+            renderQuickLogin();
+        }
+
+    } catch (err) {
+        console.error('CREATE ADMIN FATAL ERROR:', err);
+        showToast('Terjadi kesalahan saat membuat admin', 'error');
+    } finally {
+        setButtonLoading(button, false);
+    }
+});
 
 
         function clearLoginErrorState() {
