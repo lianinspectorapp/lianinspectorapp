@@ -2339,10 +2339,10 @@ async function restoreOfflineDraft(options = {}) {
         // Tujuan: foto tetap jernih untuk inspeksi, tetapi ukuran file jauh lebih ringan
         // agar Google Drive tidak cepat penuh dan report lebih cepat memuat foto.
         const INSPECTION_PHOTO_OPTIMIZE_CONFIG = {
-            maxLongEdge: 1920,          // cukup tajam untuk detail inspeksi mobil
-            jpegQuality: 0.82,          // balance jernih vs ukuran file
-            thumbnailLongEdge: 420,     // preview lokal kecil untuk IndexedDB/UI
-            thumbnailQuality: 0.68,
+            maxLongEdge: 2400,          // V125: dinaikkan sedikit agar hasil foto lebih tajam
+            jpegQuality: 0.86,          // V125: kualitas kompres dinaikkan sedikit
+            thumbnailLongEdge: 520,     // V125: preview lokal sedikit lebih jelas
+            thumbnailQuality: 0.72,
             skipOptimizationBelowBytes: 450 * 1024
         };
 
@@ -2656,17 +2656,63 @@ async function restoreOfflineDraft(options = {}) {
             overlay.querySelector('#closeCameraModalBtn')?.addEventListener('click', closeCamera);
             overlay.querySelector('#cancelLiveCameraBtn')?.addEventListener('click', closeCamera);
 
-            navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: 'environment' },
-                    width: { ideal: 1080 },
-                    height: { ideal: 1920 },
-                    aspectRatio: { ideal: 9 / 16 }
+            const cameraConstraintsList = [
+                {
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1440 },
+                        height: { ideal: 2560 },
+                        aspectRatio: { ideal: 9 / 16 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false
                 },
-                audio: false
-            }).then(mediaStream => {
+                {
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1080 },
+                        height: { ideal: 1920 },
+                        aspectRatio: { ideal: 9 / 16 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false
+                },
+                {
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false
+                },
+                {
+                    video: { facingMode: { ideal: 'environment' } },
+                    audio: false
+                }
+            ];
+
+            const openCameraStream = async () => {
+                let lastError = null;
+
+                for (const constraints of cameraConstraintsList) {
+                    try {
+                        return await navigator.mediaDevices.getUserMedia(constraints);
+                    } catch (err) {
+                        lastError = err;
+                    }
+                }
+
+                throw lastError || new Error('Kamera gagal dibuka');
+            };
+
+            openCameraStream().then(mediaStream => {
                 stream = mediaStream;
                 video.srcObject = stream;
+                const playPromise = video.play?.();
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch(() => {});
+                }
             }).catch(err => {
                 console.error('Kamera gagal dibuka:', err);
                 closeCamera();
@@ -2680,7 +2726,8 @@ async function restoreOfflineDraft(options = {}) {
                     return;
                 }
 
-                // Hasil foto dibuat portrait 9:16 dengan crop tengah, mengikuti layar kamera.
+                // V125: preview kamera boleh tampil portrait, tetapi hasil capture memakai resolusi asli kamera.
+                // Tidak lagi dipaksa menjadi 1080x1920 agar foto live di APK WebView tidak terlihat blur.
                 const targetRatio = 9 / 16;
                 const videoRatio = video.videoWidth / video.videoHeight;
                 let sx = 0;
@@ -2698,9 +2745,14 @@ async function restoreOfflineDraft(options = {}) {
                     sy = (video.videoHeight - sh) / 2;
                 }
 
-                canvas.width = 1080;
-                canvas.height = 1920;
-                const ctx = canvas.getContext('2d');
+                canvas.width = Math.max(1, Math.round(sw));
+                canvas.height = Math.max(1, Math.round(sh));
+
+                const ctx = canvas.getContext('2d', { alpha: false });
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
                 ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
 
                 canvas.toBlob(blob => {
@@ -2712,7 +2764,7 @@ async function restoreOfflineDraft(options = {}) {
                     const file = fileToInspectionPhotoFile(blob, 'camera');
                     closeCamera();
                     processInspectionPhotoFiles(itemId, [file]);
-                }, 'image/jpeg', 0.86);
+                }, 'image/jpeg', 0.92);
             });
         }
 
@@ -7655,3 +7707,302 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 console.log('✅ inspection.js v113 report indicators one-row mobile loaded');
 
 console.log('✅ inspection.js v119 multi damage selection loaded');
+
+
+// =============================================================
+// V125 - Inspector note + clearer live camera only
+// =============================================================
+// Catatan patch:
+// - Base tetap dari file yang dikirim user.
+// - Tidak mengubah alur item/kategori/report yang sudah bersih dari text backend.
+// - Catatan disimpan ke tabel inspections.inspector_note, bukan ke inspection_details.
+// - Perbaikan foto hanya menaikkan kualitas live camera/capture dan kompres.
+(function installLianV125InspectorNoteAndPhotoQuality() {
+    if (window.__LIAN_V125_INSPECTOR_NOTE_PHOTO_INSTALLED) return;
+    window.__LIAN_V125_INSPECTOR_NOTE_PHOTO_INSTALLED = true;
+
+    const TAG = '[v125-note-photo]';
+    const NOTE_SAVE_DEBOUNCE_MS = 700;
+    const noteTimers = new Map();
+
+    function escapeV125(value) {
+        if (typeof escapeHtml === 'function') return escapeHtml(value);
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function getInspectionIdV125(inspection = {}) {
+        return inspection?.inspectionId ||
+            inspection?.inspection_id ||
+            inspection?.id ||
+            inspection?.existingInspectionId ||
+            inspection?.editingInspectionId ||
+            '';
+    }
+
+    function getInspectorNoteStorageKeyV125(inspectionId) {
+        return `lian_inspector_note_${inspectionId || 'draft'}`;
+    }
+
+    function getInspectionNoteFromMemoryV125(inspectionId = '') {
+        const id = String(inspectionId || '').trim();
+        if (!id) return '';
+
+        const pool = [];
+        try { pool.push(...(allInspections || [])); } catch (_) {}
+        try { pool.push(...(sheetInspections || [])); } catch (_) {}
+
+        const row = pool.find(item => {
+            const itemId = item?.id || item?.inspection_id || item?.inspectionId;
+            return String(itemId || '') === id;
+        });
+
+        return String(
+            row?.inspector_note ??
+            row?.inspectorNote ??
+            row?._inspectorNote ??
+            ''
+        );
+    }
+
+    function getInspectorNoteValueV125(inspection = {}) {
+        const inspectionId = getInspectionIdV125(inspection);
+        const direct = String(
+            inspection?.inspector_note ??
+            inspection?.inspectorNote ??
+            inspection?._inspectorNote ??
+            ''
+        );
+
+        if (direct.trim()) return direct;
+
+        const memoryNote = getInspectionNoteFromMemoryV125(inspectionId);
+        if (memoryNote.trim()) return memoryNote;
+
+        try {
+            return localStorage.getItem(getInspectorNoteStorageKeyV125(inspectionId)) || '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function updateInspectionNoteInMemoryV125(inspectionId, note) {
+        const id = String(inspectionId || '').trim();
+        if (!id) return;
+
+        const patch = item => {
+            if (!item) return item;
+            const itemId = item.id || item.inspection_id || item.inspectionId;
+            if (String(itemId || '') === id) {
+                item.inspector_note = note;
+                item.inspectorNote = note;
+            }
+            return item;
+        };
+
+        try { (allInspections || []).forEach(patch); } catch (_) {}
+        try { (sheetInspections || []).forEach(patch); } catch (_) {}
+    }
+
+    async function saveInspectorNoteToSupabaseV125(inspectionId, note) {
+        const id = String(inspectionId || '').trim();
+        if (!id) return false;
+
+        try {
+            localStorage.setItem(getInspectorNoteStorageKeyV125(id), note || '');
+        } catch (_) {}
+
+        updateInspectionNoteInMemoryV125(id, note || '');
+
+        if (typeof supabaseClient === 'undefined' || !supabaseClient || !navigator.onLine) {
+            return false;
+        }
+
+        const { error } = await supabaseClient
+            .from('inspections')
+            .update({ inspector_note: note || '' })
+            .eq('id', id);
+
+        if (error) throw error;
+        return true;
+    }
+
+    function setInspectorNoteSaveStatusV125(text, color = '#64748b') {
+        const status = document.getElementById('lianInspectorNoteSaveStatusV125');
+        if (!status) return;
+        status.textContent = text || '';
+        status.style.color = color;
+    }
+
+    function scheduleInspectorNoteSaveV125(inspectionId, note) {
+        const id = String(inspectionId || '').trim();
+        if (!id) return;
+
+        if (noteTimers.has(id)) clearTimeout(noteTimers.get(id));
+
+        try {
+            localStorage.setItem(getInspectorNoteStorageKeyV125(id), note || '');
+        } catch (_) {}
+
+        updateInspectionNoteInMemoryV125(id, note || '');
+        setInspectorNoteSaveStatusV125('Menyimpan catatan...', '#64748b');
+
+        const timer = setTimeout(async () => {
+            noteTimers.delete(id);
+            try {
+                const synced = await saveInspectorNoteToSupabaseV125(id, note || '');
+                setInspectorNoteSaveStatusV125(
+                    synced ? 'Catatan tersimpan' : 'Catatan tersimpan lokal',
+                    synced ? '#16a34a' : '#d97706'
+                );
+            } catch (err) {
+                console.warn(TAG, 'catatan gagal sync:', err?.message || err);
+                setInspectorNoteSaveStatusV125('Catatan tersimpan lokal, gagal sync', '#dc2626');
+            }
+        }, NOTE_SAVE_DEBOUNCE_MS);
+
+        noteTimers.set(id, timer);
+    }
+
+    function buildInspectorNoteHtmlV125(inspection = {}) {
+        const inspectionId = getInspectionIdV125(inspection);
+        const existingValue = document.getElementById('lianInspectorFinalNoteV125')?.value;
+        const note = existingValue !== undefined ? existingValue : getInspectorNoteValueV125(inspection);
+
+        return `
+            <div id="lianInspectorNoteBoxV125" style="margin-top:13px; background:#ffffff; border:1.5px solid #dbeafe; border-radius:16px; padding:12px; break-inside:avoid; page-break-inside:avoid;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
+                    <div style="font-size:11px; font-weight:950; color:#64748b; text-transform:uppercase; letter-spacing:.04em;">Catatan Inspector</div>
+                    <div style="font-size:10px; font-weight:850; color:#94a3b8;">Opsional</div>
+                </div>
+                <textarea
+                    id="lianInspectorFinalNoteV125"
+                    data-inspection-id="${escapeV125(inspectionId)}"
+                    placeholder="Tulis catatan akhir inspector di sini..."
+                    style="width:100%; min-height:76px; resize:vertical; border:1px solid #cbd5e1; border-radius:12px; padding:10px 11px; outline:none; font-size:12px; line-height:1.45; font-weight:650; color:#0f172a; background:#f8fafc; box-sizing:border-box;"
+                >${escapeV125(note)}</textarea>
+                <div id="lianInspectorNoteSaveStatusV125" style="margin-top:6px; font-size:10.5px; font-weight:800; color:#64748b; min-height:14px;"></div>
+            </div>
+        `;
+    }
+
+    function bindInspectorNoteEventsV125() {
+        const textarea = document.getElementById('lianInspectorFinalNoteV125');
+        if (!textarea || textarea.dataset.boundV125 === 'true') return;
+
+        textarea.dataset.boundV125 = 'true';
+        textarea.addEventListener('input', () => {
+            const inspectionId = textarea.dataset.inspectionId || '';
+            scheduleInspectorNoteSaveV125(inspectionId, textarea.value || '');
+        });
+
+        textarea.addEventListener('blur', async () => {
+            const inspectionId = textarea.dataset.inspectionId || '';
+            if (!inspectionId) return;
+            try {
+                const synced = await saveInspectorNoteToSupabaseV125(inspectionId, textarea.value || '');
+                setInspectorNoteSaveStatusV125(
+                    synced ? 'Catatan tersimpan' : 'Catatan tersimpan lokal',
+                    synced ? '#16a34a' : '#d97706'
+                );
+            } catch (err) {
+                console.warn(TAG, 'catatan gagal sync saat blur:', err?.message || err);
+                setInspectorNoteSaveStatusV125('Catatan tersimpan lokal, gagal sync', '#dc2626');
+            }
+        });
+    }
+
+    function injectInspectorNoteIntoFinalGradeCardV125(inspection = {}) {
+        const card = document.getElementById('reportEditableFinalGradeCard');
+        if (!card) return;
+
+        const previousTextarea = document.getElementById('lianInspectorFinalNoteV125');
+        const liveNoteValue = previousTextarea?.value;
+
+        card.querySelector('#lianInspectorNoteBoxV125')?.remove();
+
+        if (liveNoteValue !== undefined) {
+            inspection = { ...(inspection || {}), inspector_note: liveNoteValue };
+        }
+
+        card.insertAdjacentHTML('beforeend', buildInspectorNoteHtmlV125(inspection));
+        bindInspectorNoteEventsV125();
+    }
+
+    function scheduleInspectorNoteInjectionV125(inspection = {}) {
+        [90, 420, 860, 1650, 2850, 3800].forEach(delay => {
+            setTimeout(() => injectInspectorNoteIntoFinalGradeCardV125(inspection || {}), delay);
+        });
+    }
+
+    try {
+        const previousGenerateAndShowReport = typeof generateAndShowReport === 'function'
+            ? generateAndShowReport
+            : null;
+
+        if (previousGenerateAndShowReport) {
+            generateAndShowReport = function generateAndShowReportV125(inspection) {
+                const result = previousGenerateAndShowReport.apply(this, arguments);
+                scheduleInspectorNoteInjectionV125(inspection || {});
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch generateAndShowReport dilewati:', err?.message || err);
+    }
+
+    // Tambahkan field catatan ke record submit tanpa memaksa struktur baru di inspection_details.
+    // Jika offline-sync mendukung kolom inspector_note, data ikut terbawa. Kalau tidak, fitur report note tetap aman.
+    try {
+        const previousSubmitInspectionData = typeof submitInspectionData === 'function'
+            ? submitInspectionData
+            : null;
+
+        if (previousSubmitInspectionData) {
+            submitInspectionData = async function submitInspectionDataV125(record) {
+                try {
+                    const id = record?.existingInspectionId || record?.editingInspectionId || record?.id || record?.inspection_id || '';
+                    const note = id ? getInspectorNoteValueV125({ id, ...(record || {}) }) : '';
+                    if (note) {
+                        record.inspector_note = note;
+                        record._inspectorNote = note;
+                    }
+                } catch (_) {}
+
+                return previousSubmitInspectionData.apply(this, arguments);
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch submitInspectionData dilewati:', err?.message || err);
+    }
+
+    // Saat report dibuka dari history, pastikan catatan lama dari kolom inspections.inspector_note ikut dibawa.
+    try {
+        const previousNormalizeInspectionForReport = typeof normalizeInspectionForReport === 'function'
+            ? normalizeInspectionForReport
+            : null;
+
+        if (previousNormalizeInspectionForReport) {
+            normalizeInspectionForReport = function normalizeInspectionForReportV125(raw = {}) {
+                const normalized = previousNormalizeInspectionForReport.apply(this, arguments);
+                normalized.inspector_note = raw?.inspector_note ?? raw?.inspectorNote ?? raw?._inspectorNote ?? normalized?.inspector_note ?? '';
+                normalized.inspectorNote = normalized.inspector_note;
+                return normalized;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch normalizeInspectionForReport dilewati:', err?.message || err);
+    }
+
+    window.LianInspectorNoteV125 = {
+        inject: injectInspectorNoteIntoFinalGradeCardV125,
+        save: saveInspectorNoteToSupabaseV125,
+        getValue: getInspectorNoteValueV125
+    };
+
+    console.log('✅ inspection.js v125 inspector note + photo quality loaded');
+})();
