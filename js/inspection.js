@@ -2628,8 +2628,8 @@ async function restoreOfflineDraft(options = {}) {
                         <button type="button" id="closeCameraModalBtn" class="text-white text-xl leading-none">×</button>
                     </div>
                     <div class="p-3 space-y-3 flex-1 overflow-auto">
-                        <div class="relative w-full aspect-[9/16] max-h-[72vh] mx-auto rounded-2xl overflow-hidden bg-black shadow-inner">
-                            <video id="liveCameraVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover bg-black"></video>
+                        <div class="relative w-full aspect-[3/4] max-h-[72vh] mx-auto rounded-2xl overflow-hidden bg-black shadow-inner">
+                            <video id="liveCameraVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-contain bg-black"></video>
                         </div>
                         <canvas id="liveCameraCanvas" class="hidden"></canvas>
                         <div class="grid grid-cols-2 gap-2">
@@ -2660,28 +2660,26 @@ async function restoreOfflineDraft(options = {}) {
                 {
                     video: {
                         facingMode: { ideal: 'environment' },
-                        width: { ideal: 1440 },
-                        height: { ideal: 2560 },
-                        aspectRatio: { ideal: 9 / 16 },
-                        frameRate: { ideal: 30 }
-                    },
-                    audio: false
-                },
-                {
-                    video: {
-                        facingMode: { ideal: 'environment' },
-                        width: { ideal: 1080 },
-                        height: { ideal: 1920 },
-                        aspectRatio: { ideal: 9 / 16 },
-                        frameRate: { ideal: 30 }
-                    },
-                    audio: false
-                },
-                {
-                    video: {
-                        facingMode: { ideal: 'environment' },
                         width: { ideal: 1920 },
-                        height: { ideal: 1080 },
+                        height: { ideal: 1440 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false
+                },
+                {
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1440 },
+                        height: { ideal: 1920 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false
+                },
+                {
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
                         frameRate: { ideal: 30 }
                     },
                     audio: false
@@ -2726,34 +2724,18 @@ async function restoreOfflineDraft(options = {}) {
                     return;
                 }
 
-                // V125: preview kamera boleh tampil portrait, tetapi hasil capture memakai resolusi asli kamera.
-                // Tidak lagi dipaksa menjadi 1080x1920 agar foto live di APK WebView tidak terlihat blur.
-                const targetRatio = 9 / 16;
-                const videoRatio = video.videoWidth / video.videoHeight;
-                let sx = 0;
-                let sy = 0;
-                let sw = video.videoWidth;
-                let sh = video.videoHeight;
-
-                if (videoRatio > targetRatio) {
-                    sh = video.videoHeight;
-                    sw = sh * targetRatio;
-                    sx = (video.videoWidth - sw) / 2;
-                } else {
-                    sw = video.videoWidth;
-                    sh = sw / targetRatio;
-                    sy = (video.videoHeight - sh) / 2;
-                }
-
-                canvas.width = Math.max(1, Math.round(sw));
-                canvas.height = Math.max(1, Math.round(sh));
+                // V126: ambil seluruh frame asli kamera tanpa crop 9:16.
+                // Ini membuat live camera dan hasil foto lebih natural seperti kamera HP,
+                // tidak terlalu zoom, dan rasio kendaraan tetap aman.
+                canvas.width = Math.max(1, Math.round(video.videoWidth));
+                canvas.height = Math.max(1, Math.round(video.videoHeight));
 
                 const ctx = canvas.getContext('2d', { alpha: false });
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 ctx.imageSmoothingEnabled = true;
                 ctx.imageSmoothingQuality = 'high';
-                ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
                 canvas.toBlob(blob => {
                     if (!blob) {
