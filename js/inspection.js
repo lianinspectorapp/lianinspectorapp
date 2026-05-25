@@ -719,12 +719,51 @@ function ensureReportModalAtBodyRoot() {
     return modal;
 }
 
+function cleanDamageSelectionText(value = '') {
+    return String(value ?? '')
+        .replace(/[\s\[(]*LIAN_REPORT_SNAPSHOT:\{[\s\S]*?\}[\s\])]*/gi, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function normalizeDamageSelection(value) {
+    if (Array.isArray(value)) {
+        const unique = [];
+        value.forEach(item => {
+            const text = cleanDamageSelectionText(item);
+            if (text && !unique.includes(text)) unique.push(text);
+        });
+        return unique;
+    }
+
+    if (value === null || value === undefined) return [];
+
+    const raw = cleanDamageSelectionText(value);
+    if (!raw) return [];
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return normalizeDamageSelection(parsed);
+    } catch (_) {}
+
+    return raw
+        .split(/[,;|\n]+/)
+        .map(item => cleanDamageSelectionText(item))
+        .filter(Boolean)
+        .filter((item, index, arr) => arr.indexOf(item) === index);
+}
+
+function getSelectedDamageText(value) {
+    return normalizeDamageSelection(value).join(', ');
+}
+
 function parseDetailNoteToMeta(note = '') {
     const text = String(note || '');
     const meta = { notes: text };
     const match = text.match(/Kerusakan:\s*([^\n]+)/i);
     if (match) {
-        meta.selectedDamage = match[1].trim();
+        const selectedDamages = normalizeDamageSelection(match[1].trim());
+        if (selectedDamages.length > 0) meta.selectedDamage = selectedDamages;
         meta.notes = text.replace(match[0], '').trim();
     }
     return meta;
@@ -1559,15 +1598,17 @@ async function restoreOfflineDraft(options = {}) {
                 if (itemStatus === 'warning' || itemStatus === 'bad') {
                     const damageLabel = document.createElement('div');
                     damageLabel.className = 'text-xs font-bold text-blue-900 flex items-center gap-2';
-                    damageLabel.innerHTML = '🔧 Pilih Jenis Kerusakan:';
+                    damageLabel.innerHTML = '🔧 Pilih Jenis Kerusakan (bisa lebih dari satu):';
                     dropdownContainer.appendChild(damageLabel);
 
                     if (damages.length > 0) {
                         const damageGrid = document.createElement('div');
                         damageGrid.className = 'grid grid-cols-2 gap-2';
 
+                        const selectedDamages = normalizeDamageSelection(itemData.selectedDamage);
+
                         damages.forEach(damage => {
-                            const isSelected = itemData.selectedDamage === damage;
+                            const isSelected = selectedDamages.includes(damage);
                             
                             const btn = document.createElement('button');
                             btn.type = 'button';
@@ -1691,7 +1732,7 @@ async function restoreOfflineDraft(options = {}) {
 
             // Kalau item kembali menjadi good, jangan hapus catatan/foto yang sudah dibuat.
             // Cukup hapus jenis kerusakan karena hanya relevan untuk warning/bad.
-            if (status === 'good' && itemMeta.selectedDamage) {
+            if (status === 'good' && normalizeDamageSelection(itemMeta.selectedDamage).length > 0) {
                 delete itemMeta.selectedDamage;
             }
             
@@ -1711,7 +1752,20 @@ async function restoreOfflineDraft(options = {}) {
 
         function setItemDamage(itemId, damage) {
             const itemMeta = touchInspectionItemData(itemId);
-            itemMeta.selectedDamage = damage;
+            const selectedDamages = normalizeDamageSelection(itemMeta.selectedDamage);
+            const existingIndex = selectedDamages.indexOf(damage);
+
+            if (existingIndex >= 0) {
+                selectedDamages.splice(existingIndex, 1);
+            } else {
+                selectedDamages.push(damage);
+            }
+
+            if (selectedDamages.length > 0) {
+                itemMeta.selectedDamage = selectedDamages;
+            } else {
+                delete itemMeta.selectedDamage;
+            }
             
             const itemElement = document.querySelector(`[data-itemid="${itemId}"]`);
             if (itemElement) {
@@ -3631,7 +3685,8 @@ async function restoreOfflineDraft(options = {}) {
             reportItems.forEach(row => {
                 row.photos.forEach((photo, idx) => {
                     const pieces = [row.item.name];
-                    if (row.detail?.selectedDamage) pieces.push(row.detail.selectedDamage);
+                    const damageText = getSelectedDamageText(row.detail?.selectedDamage);
+                    if (damageText) pieces.push(damageText);
                     if (row.detail?.notes) pieces.push(row.detail.notes);
                     photoRows.push({ photo, caption: pieces.filter(Boolean).join(' — ') || `Foto ${idx + 1}` });
                 });
@@ -3773,7 +3828,8 @@ async function restoreOfflineDraft(options = {}) {
                         ${importantFindings.map(row => {
                             const s = statusMeta[row.status] || statusMeta.good;
                             const infoParts = [];
-                            if (row.detail?.selectedDamage) infoParts.push(row.detail.selectedDamage);
+                            const damageText = getSelectedDamageText(row.detail?.selectedDamage);
+                            if (damageText) infoParts.push(damageText);
                             if (row.detail?.notes) infoParts.push(row.detail.notes);
                             const infoText = infoParts.length > 0 ? `(${escapeHtml(infoParts.join(' - '))})` : '';
                             return `<div style="background:white; border-left:4px solid ${s.border}; border-radius:13px; padding:11px; min-width:0; box-shadow:0 6px 14px rgba(15,23,42,.04);">
@@ -3808,7 +3864,8 @@ async function restoreOfflineDraft(options = {}) {
                                 ${rows.map(row => {
                                     const s = statusMeta[row.status] || statusMeta.good;
                                     const inlineInfoParts = [];
-                                    if (row.detail?.selectedDamage) inlineInfoParts.push(row.detail.selectedDamage);
+                                    const damageText = getSelectedDamageText(row.detail?.selectedDamage);
+                                    if (damageText) inlineInfoParts.push(damageText);
                                     if (row.detail?.notes) inlineInfoParts.push(row.detail.notes);
                                     const inlineInfo = inlineInfoParts.length > 0
                                         ? ` <span style="font-weight:500;color:#64748b;">(${escapeHtml(inlineInfoParts.join(' - '))})</span>`
@@ -7151,7 +7208,12 @@ console.log('✅ inspection.js v30 batch photo report loaded');
                 : { notes: cleanNote };
 
             ['notes', 'selectedDamage', 'itemName', 'item_name', 'category', 'categoryName', 'critical_level'].forEach(key => {
-                if (base && base[key] !== undefined) base[key] = cleanSnapshotTextV108(base[key]);
+                if (!base || base[key] === undefined) return;
+                if (key === 'selectedDamage' && typeof normalizeDamageSelection === 'function') {
+                    base[key] = normalizeDamageSelection(base[key]);
+                    return;
+                }
+                base[key] = cleanSnapshotTextV108(base[key]);
             });
 
             return base || { notes: cleanNote };
@@ -7591,3 +7653,5 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 
 
 console.log('✅ inspection.js v113 report indicators one-row mobile loaded');
+
+console.log('✅ inspection.js v119 multi damage selection loaded');
