@@ -1446,8 +1446,8 @@ async function restoreOfflineDraft(options = {}) {
             vehicleDisplay.textContent = `🚗 ${inspectionFormData.vehicleType} - ${inspectionFormData.vehiclePlate}`;
             
             const categories = [];
-            sheetCategories.forEach(cat => {
-                const itemsInCat = sheetItems.filter(item => item.category === cat.name);
+            (window.LianDataOrder?.sortCategories(sheetCategories) || sheetCategories).forEach(cat => {
+                const itemsInCat = (window.LianDataOrder?.sortItems(sheetItems) || sheetItems).filter(item => window.LianDataOrder?.key(item.category) === window.LianDataOrder?.key(cat.name));
                 if (itemsInCat.length > 0) {
                     categories.push({ category: cat, items: itemsInCat });
                 }
@@ -3016,7 +3016,7 @@ async function restoreOfflineDraft(options = {}) {
             try {
                 (sheetCategories || []).forEach((cat, index) => {
                     const safeCategoryKey = String(cat.id || cat.name || index).replace(/[^a-zA-Z0-9_-]/g, '_');
-                    const itemsInCat = (sheetItems || []).filter(item => item.category === cat.name);
+                    const itemsInCat = (window.LianDataOrder?.sortItems(sheetItems || []) || (sheetItems || [])).filter(item => window.LianDataOrder?.key(item.category) === window.LianDataOrder?.key(cat.name));
                     const catProgress = typeof getInspectionCategoryProgress === 'function'
                         ? getInspectionCategoryProgress(itemsInCat)
                         : { total: itemsInCat.length, completed: 0, percentage: 0 };
@@ -3067,7 +3067,7 @@ async function restoreOfflineDraft(options = {}) {
                 }
             });
             
-            return Math.round((goodCount * 100 + warningCount * 60 + badCount * 20) / total);
+            return Math.round((goodCount * 100 + warningCount * 60 + badCount * 0) / total);
         }
 
         function createFinalInspectionUuid() {
@@ -3666,13 +3666,13 @@ async function restoreOfflineDraft(options = {}) {
             const statusMeta = {
                 good: { label: 'OK', longLabel: 'Baik', emoji: '🟢', dot: '#079455', bg: '#dcfce7', color: '#166534', border: '#22c55e', point: 100 },
                 warning: { label: 'Perlu diperhatikan', longLabel: 'Perhatian', emoji: '🟡', dot: '#f59e0b', bg: '#fef3c7', color: '#92400e', border: '#f59e0b', point: 60 },
-                bad: { label: 'Perlu perbaikan', longLabel: 'Rusak', emoji: '🔴', dot: '#ef4444', bg: '#fee2e2', color: '#991b1b', border: '#ef4444', point: 20 }
+                bad: { label: 'Perlu perbaikan', longLabel: 'Rusak', emoji: '🔴', dot: '#ef4444', bg: '#fee2e2', color: '#991b1b', border: '#ef4444', point: 0 }
             };
 
             const reportItems = [];
             const categoryMap = new Map();
-            (sheetCategories || []).forEach(cat => {
-                const itemsInCat = (sheetItems || []).filter(item => item.category === cat.name);
+            (window.LianDataOrder?.sortCategories(sheetCategories || []) || (sheetCategories || [])).forEach(cat => {
+                const itemsInCat = (window.LianDataOrder?.sortItems(sheetItems || []) || (sheetItems || [])).filter(item => window.LianDataOrder?.key(item.category) === window.LianDataOrder?.key(cat.name));
                 if (itemsInCat.length > 0) categoryMap.set(cat.name, { category: cat, items: itemsInCat });
             });
 
@@ -3706,7 +3706,7 @@ async function restoreOfflineDraft(options = {}) {
             const goodCount = reportItems.filter(r => r.status === 'good').length;
             const warningCount = reportItems.filter(r => r.status === 'warning').length;
             const badCount = reportItems.filter(r => r.status === 'bad').length;
-            const calculatedScore = total > 0 ? Math.round(((goodCount * 100) + (warningCount * 60) + (badCount * 20)) / total) : 0;
+            const calculatedScore = total > 0 ? Math.round(((goodCount * 100) + (warningCount * 60) + (badCount * 0)) / total) : 0;
             const score = Number.isFinite(Number(inspection.value)) && Number(inspection.value) > 0 ? Number(inspection.value) : calculatedScore;
             const finalStatus = score >= 80 ? 'Layak' : score >= 50 ? 'Layak dengan Catatan' : 'Perlu Perbaikan';
             const scoreColor = score >= 80 ? '#16a34a' : score >= 50 ? '#d97706' : '#dc2626';
@@ -3735,12 +3735,58 @@ async function restoreOfflineDraft(options = {}) {
 
             const buildCategoryScore = (rows = []) => {
                 if (!rows.length) return 0;
+                if (window.LianInspectionScore && typeof window.LianInspectionScore.calculateWeightedPhysicalScore === 'function') {
+                    const categoryItemsData = {};
+                    rows.forEach(row => {
+                        if (!row?.item?.id) return;
+                        categoryItemsData[row.item.id] = row.status;
+                        categoryItemsData[row.item.id + '_data'] = row.detail || {};
+                    });
+                    return window.LianInspectionScore.calculateWeightedPhysicalScore(
+                        rows.map(row => row.item),
+                        categoryItemsData
+                    ).score;
+                }
                 const totalPoint = rows.reduce((sum, row) => sum + (statusMeta[row.status]?.point || 0), 0);
                 return Math.round(totalPoint / rows.length);
             };
 
+            const normalizeCriticalForCategory = (value) => {
+                if (window.LianInspectionScore && typeof window.LianInspectionScore.normalizeCriticalLevel === 'function') {
+                    return window.LianInspectionScore.normalizeCriticalLevel(value);
+                }
+                const text = String(value || '').trim().toLowerCase();
+                if (['critical', 'kritis', 'fatal'].includes(text)) return 'critical';
+                if (['high', 'tinggi'].includes(text)) return 'high';
+                if (['medium', 'sedang'].includes(text)) return 'medium';
+                return 'low';
+            };
+
+            const applyCategoryRiskCap = (score, rows = []) => {
+                const total = rows.length || 0;
+                const badRows = rows.filter(row => row.status === 'bad');
+                const criticalBad = badRows.filter(row => normalizeCriticalForCategory(row.item?.critical_level || row.item?.criticalLevel || row.detail?.critical_level) === 'critical').length;
+                const criticalWarning = rows.filter(row =>
+                    row.status === 'warning' &&
+                    normalizeCriticalForCategory(row.item?.critical_level || row.item?.criticalLevel || row.detail?.critical_level) === 'critical'
+                ).length;
+                const highBad = badRows.filter(row => normalizeCriticalForCategory(row.item?.critical_level || row.item?.criticalLevel || row.detail?.critical_level) === 'high').length;
+                const mediumHighBad = badRows.filter(row => ['medium', 'high'].includes(normalizeCriticalForCategory(row.item?.critical_level || row.item?.criticalLevel || row.detail?.critical_level))).length;
+                const badRatio = total > 0 ? badRows.length / total : 0;
+
+                let cap = 100;
+                if (criticalBad >= 1) cap = Math.min(cap, 49);
+                if (criticalWarning >= 1) cap = Math.min(cap, 89);
+                if (highBad >= 2) cap = Math.min(cap, 79);
+                if (mediumHighBad >= 3) cap = Math.min(cap, 69);
+                if (badRatio >= 0.40) cap = Math.min(cap, 49);
+                else if (badRatio >= 0.25) cap = Math.min(cap, 69);
+
+                return Math.round(Math.min(Number(score) || 0, cap));
+            };
+
             const categoryScoreCards = Array.from(grouped.entries()).map(([categoryName, rows]) => {
-                const catScore = buildCategoryScore(rows);
+                const catScore = applyCategoryRiskCap(buildCategoryScore(rows), rows);
                 const catColor = catScore >= 80 ? '#16a34a' : catScore >= 50 ? '#d97706' : '#dc2626';
                 const cGood = rows.filter(r => r.status === 'good').length;
                 const cWarn = rows.filter(r => r.status === 'warning').length;
@@ -6938,7 +6984,7 @@ console.log('✅ inspection.js v30 batch photo report loaded');
             try {
                 (sheetCategories || []).forEach((cat, index) => {
                     const safeCategoryKey = getCategoryKeyV102(cat, index);
-                    const itemsInCat = items.filter(item => item.category === cat.name);
+                    const itemsInCat = items.filter(item => window.LianDataOrder?.key(item.category) === window.LianDataOrder?.key(cat.name));
                     const catProgress = getInspectionCategoryProgressV102(itemsInCat);
 
                     const fill = document.querySelector(`[data-category-progress-fill="${safeCategoryKey}"]`);
@@ -7173,7 +7219,7 @@ console.log('✅ inspection.js v30 batch photo report loaded');
         try {
             (sheetCategories || []).forEach((cat, index) => {
                 const safeCategoryKey = String(cat.id || cat.name || index).replace(/[^a-zA-Z0-9_-]/g, '_');
-                const itemsInCat = (sheetItems || []).filter(item => item.category === cat.name);
+                const itemsInCat = (sheetItems || []).filter(item => window.LianDataOrder?.key(item.category) === window.LianDataOrder?.key(cat.name));
                 const total = itemsInCat.length;
                 const completed = itemsInCat.filter(item => isCompletedStatusV108(inspectionItemsData?.[item.id])).length;
                 const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
@@ -7859,7 +7905,6 @@ console.log('✅ inspection.js v119 multi damage selection loaded');
             <div id="lianInspectorNoteBoxV125" style="margin-top:13px; background:#ffffff; border:1.5px solid #dbeafe; border-radius:16px; padding:12px; break-inside:avoid; page-break-inside:avoid;">
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
                     <div style="font-size:11px; font-weight:950; color:#64748b; text-transform:uppercase; letter-spacing:.04em;">Catatan Inspector</div>
-                    <div style="font-size:10px; font-weight:850; color:#94a3b8;">Opsional</div>
                 </div>
                 <textarea
                     id="lianInspectorFinalNoteV125"
