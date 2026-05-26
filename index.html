@@ -1074,6 +1074,148 @@ function getTable(type) {
   return map[type];
 }
 
+        const LianDataOrder = (() => {
+            const LOCAL_KEY = 'lian_sort_order_v1';
+            const collator = new Intl.Collator('id-ID', { numeric: true, sensitivity: 'base' });
+
+            const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+            const key = value => clean(value).toLowerCase();
+            const titleCase = value => clean(value)
+                .toLowerCase()
+                .replace(/\b[\p{L}\p{N}]/gu, char => char.toUpperCase());
+
+            function readLocal() {
+                try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || '{}') || {}; }
+                catch (_) { return {}; }
+            }
+
+            function writeLocal(type, rows) {
+                try {
+                    const data = readLocal();
+                    data[type] = data[type] || {};
+                    rows.forEach(row => {
+                        const id = String(row.id || row.name || '').trim();
+                        if (id) data[type][id] = Number(row.sort_order || 0);
+                    });
+                    localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
+                } catch (_) {}
+            }
+
+            function localOrder(type, row) {
+                const data = readLocal();
+                const id = String(row?.id || row?.name || '').trim();
+                return Number(data?.[type]?.[id] || 0);
+            }
+
+            function normalizeCategoryName(value) {
+                return titleCase(value);
+            }
+
+            function findCategoryByName(name) {
+                const wanted = key(name);
+                if (!wanted) return null;
+                return (sheetCategories || []).find(cat => key(cat.name) === wanted) || null;
+            }
+
+            function sortValue(type, row, fallbackIndex) {
+                const direct = Number(row?.sort_order ?? row?.sortOrder);
+                if (Number.isFinite(direct) && direct > 0) return direct;
+                const saved = localOrder(type, row);
+                if (Number.isFinite(saved) && saved > 0) return saved;
+                return 100000 + fallbackIndex;
+            }
+
+            function sortCategories(rows = sheetCategories || []) {
+                return [...(rows || [])].sort((a, b) => {
+                    const aIndex = rows.indexOf(a);
+                    const bIndex = rows.indexOf(b);
+                    const byOrder = sortValue('categories', a, aIndex) - sortValue('categories', b, bIndex);
+                    if (byOrder !== 0) return byOrder;
+                    return collator.compare(clean(a?.name), clean(b?.name));
+                });
+            }
+
+            function categoryIndexMap() {
+                const map = new Map();
+                sortCategories().forEach((cat, index) => map.set(key(cat.name), index));
+                return map;
+            }
+
+            function sortItems(rows = sheetItems || []) {
+                const catMap = categoryIndexMap();
+                return [...(rows || [])].sort((a, b) => {
+                    const aCat = catMap.get(key(a?.category)) ?? 9999;
+                    const bCat = catMap.get(key(b?.category)) ?? 9999;
+                    if (aCat !== bCat) return aCat - bCat;
+                    const aIndex = rows.indexOf(a);
+                    const bIndex = rows.indexOf(b);
+                    const byOrder = sortValue('items', a, aIndex) - sortValue('items', b, bIndex);
+                    if (byOrder !== 0) return byOrder;
+                    return collator.compare(clean(a?.name), clean(b?.name));
+                });
+            }
+
+            async function persist(type, rows) {
+                const ordered = rows.map((row, index) => ({ ...row, sort_order: (index + 1) * 10 }));
+                writeLocal(type, ordered);
+
+                if (typeof supabaseClient === 'undefined' || !supabaseClient) return { ok: false, localOnly: true };
+
+                const table = type === 'categories' ? 'categories' : 'items';
+                const updates = ordered
+                    .filter(row => row.id)
+                    .map(row => supabaseClient.from(table).update({ sort_order: row.sort_order }).eq('id', row.id));
+
+                if (!updates.length) return { ok: true, localOnly: true };
+
+                const results = await Promise.allSettled(updates);
+                const failed = results.find(result => result.status === 'rejected' || result.value?.error);
+                return failed ? { ok: false, localOnly: true, error: failed.reason || failed.value?.error } : { ok: true };
+            }
+
+            function normalizeLoadedData() {
+                const categoryMap = new Map();
+                (sheetCategories || []).forEach(cat => {
+                    const normalizedName = normalizeCategoryName(cat.name);
+                    const catKey = key(normalizedName);
+                    if (!catKey) return;
+                    const existing = categoryMap.get(catKey);
+                    if (!existing) {
+                        categoryMap.set(catKey, { ...cat, name: normalizedName });
+                        return;
+                    }
+                    const existingOrder = Number(existing.sort_order ?? existing.sortOrder ?? 0) || 0;
+                    const currentOrder = Number(cat.sort_order ?? cat.sortOrder ?? 0) || 0;
+                    if (currentOrder && (!existingOrder || currentOrder < existingOrder)) {
+                        categoryMap.set(catKey, { ...cat, name: normalizedName });
+                    }
+                });
+                sheetCategories = sortCategories([...categoryMap.values()]);
+                allCategories = [...sheetCategories];
+
+                sheetItems = sortItems((sheetItems || []).map(item => {
+                    const existing = findCategoryByName(item.category);
+                    return {
+                        ...item,
+                        category: existing?.name || normalizeCategoryName(item.category)
+                    };
+                }));
+                allItems = [...sheetItems];
+            }
+
+            return {
+                clean,
+                key,
+                normalizeCategoryName,
+                findCategoryByName,
+                sortCategories,
+                sortItems,
+                persist,
+                normalizeLoadedData
+            };
+        })();
+        window.LianDataOrder = LianDataOrder;
+
 		async function loadInitialData() {
   const { data: users } = await supabaseClient.from('users').select('*');
 
@@ -1121,6 +1263,9 @@ renderInspectionHistory();
 sheetCategories = categories || [];
 sheetItems = items || [];
 sheetInspections = inspections || [];
+if (window.LianDataOrder) {
+    window.LianDataOrder.normalizeLoadedData();
+}
 
 // 🔥 PINDAHKAN KE SINI (PALING AKHIR)
 checkAdminExists();
@@ -1663,8 +1808,8 @@ if (setupBtn) {
             if (!filterList) return;
             filterList.innerHTML = '';
             
-            sheetCategories.forEach(cat => {
-                const itemCount = (sheetItems || []).filter(i => i.category === cat.name).length;
+            (window.LianDataOrder?.sortCategories(sheetCategories) || sheetCategories).forEach(cat => {
+                const itemCount = (sheetItems || []).filter(i => window.LianDataOrder?.key(i.category) === window.LianDataOrder?.key(cat.name)).length;
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'w-full text-left px-4 py-3 hover:bg-blue-50/80 transition-all border-b border-slate-100 text-sm text-slate-900 flex items-center gap-3 font-bold';
@@ -1939,7 +2084,10 @@ window.selectCategory = function(categoryName) {
 
         document.getElementById('saveItemBtn')?.addEventListener('click', async () => {
             const button = document.getElementById('saveItemBtn');
-            const categoryInput = document.getElementById('itemCategory').value.trim();
+            const rawCategoryInput = document.getElementById('itemCategory').value.trim();
+            const inputCategoryMatch = window.LianDataOrder?.findCategoryByName(rawCategoryInput);
+            const categoryInput = inputCategoryMatch?.name || window.LianDataOrder?.normalizeCategoryName(rawCategoryInput) || rawCategoryInput;
+            document.getElementById('itemCategory').value = categoryInput;
             const itemName = document.getElementById('itemName').value.trim();
             const criticalLevel = document.getElementById('itemCriticalLevel').value;
             
@@ -1999,6 +2147,7 @@ const { data: latestItems } = await supabaseClient
 if (latestItems) {
     sheetItems = latestItems;
 }
+if (window.LianDataOrder) window.LianDataOrder.normalizeLoadedData();
 
 renderItems();
 updateDashboard();
@@ -2017,20 +2166,22 @@ showToast('✔ Item berhasil diperbarui!');
 // AUTO CREATE CATEGORY
 // =============================
 
-const cleanCategory = categoryInput.trim().toLowerCase();
+const cleanCategory = window.LianDataOrder?.normalizeCategoryName(categoryInput) || categoryInput.trim();
 
 const { data: existingCategory, error: categoryCheckError } =
   await supabaseClient
     .from('categories')
     .select('*')
-    .eq('name', cleanCategory)
-    .maybeSingle();
+    .ilike('name', cleanCategory)
+    .limit(1);
 
 if (categoryCheckError) {
   console.error('❌ Category check error:', categoryCheckError);
 }
 
-if (!existingCategory && cleanCategory !== '') {
+const matchedCategory = Array.isArray(existingCategory) ? existingCategory[0] : existingCategory;
+
+if (!matchedCategory && cleanCategory !== '') {
 
   console.log('➕ Creating new category:', cleanCategory);
 
@@ -2088,6 +2239,7 @@ const { data: latestCategories } = await supabaseClient
 if (latestCategories) {
   sheetCategories = latestCategories;
 }
+if (window.LianDataOrder) window.LianDataOrder.normalizeLoadedData();
 
 renderItems();
 updateDashboard();
@@ -2114,7 +2266,7 @@ showToast('✓ Item berhasil ditambahkan!');
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#039;');
 
-            const baseItems = sheetItems || [];
+            const baseItems = window.LianDataOrder?.sortItems(sheetItems || []) || (sheetItems || []);
             const isCategoryFiltered = Boolean(selectedCategoryFilter);
             const selectedCategoryName = selectedCategoryFilter || '';
 
@@ -2124,7 +2276,7 @@ showToast('✓ Item berhasil ditambahkan!');
             console.log('sheetCategories:', sheetCategories);
 
             let itemsToDisplay = isCategoryFiltered
-                ? baseItems.filter(i => i.category === selectedCategoryFilter)
+                ? baseItems.filter(i => window.LianDataOrder?.key(i.category) === window.LianDataOrder?.key(selectedCategoryFilter))
                 : [...baseItems];
 
             // Kalau benar-benar belum ada item sama sekali dan user tidak sedang filter kategori,
@@ -2152,7 +2304,7 @@ showToast('✓ Item berhasil ditambahkan!');
             if (currentSearchQuery) {
                 itemsToDisplay = itemsToDisplay.filter(item => {
                     const itemName = String(item.name || '').toLowerCase();
-                    const cat = sheetCategories.find(c => c.name === item.category);
+                    const cat = (sheetCategories || []).find(c => window.LianDataOrder?.key(c.name) === window.LianDataOrder?.key(item.category));
                     const categoryName = String(cat?.name || '').toLowerCase();
                     return itemName.includes(currentSearchQuery) || categoryName.includes(currentSearchQuery);
                 });
@@ -2191,7 +2343,7 @@ showToast('✓ Item berhasil ditambahkan!');
 
             itemsToDisplay.forEach(item => {
                 const damages = Array.isArray(item.damage_types) ? item.damage_types : [];
-                const cat = sheetCategories.find(c => c.name === item.category);
+                    const cat = (sheetCategories || []).find(c => window.LianDataOrder?.key(c.name) === window.LianDataOrder?.key(item.category));
                 const criticalLevel = item.critical_level || 'Low';
                 const criticalMap = {
                     Low: { label: 'Rendah', dot: 'bg-green-500', border: 'border-green-100', bg: 'bg-green-50', text: 'text-green-700' },
@@ -2305,7 +2457,7 @@ showToast('✓ Item berhasil ditambahkan!');
                 document.getElementById('itemName').value = item.name;
                 document.getElementById('itemCriticalLevel').value = item.critical_level;
                 
-                const cat = sheetCategories.find(c => c.name === item.category);
+                const cat = (sheetCategories || []).find(c => window.LianDataOrder?.key(c.name) === window.LianDataOrder?.key(item.category));
                 document.getElementById('itemCategory').value = cat?.name || '';
                 document.getElementById('itemCategory').dataset.categoryId = item.category;
                 
@@ -2365,7 +2517,8 @@ showToast('✓ Item berhasil ditambahkan!');
 
         document.getElementById('saveCategoryBtn')?.addEventListener('click', async () => {
             const button = document.getElementById('saveCategoryBtn');
-            const categoryName = document.getElementById('categoryName').value.trim();
+            const categoryName = window.LianDataOrder?.normalizeCategoryName(document.getElementById('categoryName').value) || document.getElementById('categoryName').value.trim();
+            document.getElementById('categoryName').value = categoryName;
 
             if (!categoryName) {
                 showToast('Nama kategori wajib diisi', 'error');
@@ -2461,7 +2614,7 @@ showToast('✓ Item berhasil ditambahkan!');
                 return;
             }
 
-            sheetCategories.forEach(cat => {
+            (window.LianDataOrder?.sortCategories(sheetCategories) || sheetCategories).forEach(cat => {
                 const items = getCategoryItems(cat);
                 const itemsInCat = items.length;
                 const safeId = makeSafeId(cat.id || cat.name);
@@ -2500,13 +2653,22 @@ showToast('✓ Item berhasil ditambahkan!');
                         </div>
                     </div>
 
-                    <div class="category-dropdown-content hidden relative border-t border-blue-50 bg-white/95 p-3" id="dropdown-${safeId}">
+                    <div class="category-dropdown-content hidden relative border-t border-blue-50 bg-white/95 p-3" id="dropdown-${safeId}" data-sort-category-id="${safeCatId}" data-sort-category-key="${window.LianDataOrder?.key(cat.name) || String(cat.name || '').trim().toLowerCase()}">
                         ${itemsInCat > 0 ? `
                             <div class="grid grid-cols-1 gap-2">
-                                ${items.map((item, index) => `
-                                    <div class="flex items-center gap-3 px-3 py-2 rounded-2xl bg-slate-50 border border-slate-100 hover:border-blue-200 hover:bg-blue-50/60 transition-all">
-                                        <div class="w-6 h-6 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-black text-[11px] flex-shrink-0">${index + 1}</div>
+                                ${(window.LianDataOrder?.sortItems(items) || items).map((item, index) => `
+                                    <div data-category-item-row="true" class="flex items-center gap-3 px-3 py-2 rounded-2xl bg-slate-50 border border-slate-100 hover:border-blue-200 hover:bg-blue-50/60 transition-all">
+                                        <div data-category-item-number="true" class="w-6 h-6 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-black text-[11px] flex-shrink-0">${index + 1}</div>
+                                        <i data-lucide="grip-vertical" style="width:15px;height:15px;color:#64748b;flex-shrink:0;"></i>
                                         <p class="text-sm text-slate-700 font-semibold leading-tight flex-1">${esc(item.name)}</p>
+                                        <div class="flex items-center gap-1 flex-shrink-0">
+                                            <button type="button" class="category-item-move-btn w-7 h-7 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-all flex items-center justify-center" data-move-item="up" title="Naikkan urutan">
+                                                <i data-lucide="chevron-up" style="width:14px;height:14px;"></i>
+                                            </button>
+                                            <button type="button" class="category-item-move-btn w-7 h-7 rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-all flex items-center justify-center" data-move-item="down" title="Turunkan urutan">
+                                                <i data-lucide="chevron-down" style="width:14px;height:14px;"></i>
+                                            </button>
+                                        </div>
                                     </div>
                                 `).join('')}
                             </div>
@@ -3625,6 +3787,283 @@ initStaffModalButtons();
   }
 
   console.log('✅ Lian UI polish v103 loaded');
+})();
+</script>
+
+<script id="lian-drag-sort-v126">
+(function () {
+  'use strict';
+  if (window.__LIAN_DRAG_SORT_V126__) return;
+  window.__LIAN_DRAG_SORT_V126__ = true;
+
+  const dragState = { type: '', id: '' };
+
+  function toast(message, type = 'success') {
+    if (typeof showToast === 'function') showToast(message, type);
+  }
+
+  function isAdminForSort() {
+    try {
+      if (typeof currentUser !== 'undefined' && currentUser?.role === 'admin') return true;
+    } catch (_) {}
+    const roleText = document.getElementById('userRoleDisplay')?.textContent || '';
+    const navText = document.getElementById('navMenu')?.textContent || '';
+    return /admin|administrator/i.test(roleText) || (navText.includes('Staff') && navText.includes('Categories'));
+  }
+
+  function getCardAfter(container, y) {
+    const cards = [...container.querySelectorAll('[draggable="true"]:not(.dragging)')];
+    return cards.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) return { offset, element: child };
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+  }
+
+  function renumberCategoryItemRows(container) {
+    const scope = container?.querySelectorAll ? container : document;
+    [...scope.querySelectorAll('[data-category-item-row="true"]')].forEach((row, index) => {
+      const number = row.querySelector('[data-category-item-number="true"]');
+      if (number) number.textContent = String(index + 1);
+    });
+  }
+
+  async function saveCategoryOrderFromDom(container) {
+    const ids = [...container.querySelectorAll('[data-sort-category-id]')].map(el => el.dataset.sortCategoryId);
+    const map = new Map((sheetCategories || []).map(cat => [String(cat.id || cat.name), cat]));
+    const ordered = ids.map(id => map.get(id)).filter(Boolean);
+    if (!ordered.length) return;
+
+    sheetCategories = ordered.map((cat, index) => ({ ...cat, sort_order: (index + 1) * 10 }));
+    allCategories = [...sheetCategories];
+    const result = await window.LianDataOrder?.persist('categories', sheetCategories);
+    if (result?.ok) toast('Urutan kategori tersimpan');
+    else toast('Urutan kategori tersimpan lokal. Tambahkan kolom sort_order di Supabase agar tersimpan untuk semua perangkat.', 'error');
+    renderCategories();
+    renderCategoryFilterDropdown();
+  }
+
+  async function saveItemOrderFromDom(container) {
+    const ids = [...container.querySelectorAll('[data-sort-item-id]')].map(el => el.dataset.sortItemId);
+    const itemMap = new Map((sheetItems || []).map(item => [String(item.id), item]));
+    const movedItem = itemMap.get(String(dragState.id || ''));
+    const categoryKey = container.dataset.sortCategoryKey || window.LianDataOrder?.key(movedItem?.category);
+    const visible = ids
+      .map(id => itemMap.get(id))
+      .filter(item => item && window.LianDataOrder?.key(item.category) === categoryKey);
+    if (!visible.length) return;
+    const orderedCategoryItems = visible.map((item, index) => ({ ...item, sort_order: (index + 1) * 10 }));
+    const orderMap = new Map(orderedCategoryItems.map(item => [String(item.id), item]));
+    sheetItems = (sheetItems || []).map(item => {
+      if (window.LianDataOrder?.key(item.category) !== categoryKey) return item;
+      return orderMap.get(String(item.id)) || item;
+    });
+    allItems = [...sheetItems];
+    renumberCategoryItemRows(container);
+
+    const result = await window.LianDataOrder?.persist('items', orderedCategoryItems);
+    if (result?.ok) toast('Urutan item tersimpan');
+    else toast('Urutan item tersimpan lokal. Tambahkan kolom sort_order di Supabase agar tersimpan untuk semua perangkat.', 'error');
+    renderItems();
+  }
+
+  function enhanceCategoryDrag() {
+    if (!isAdminForSort()) return;
+    const container = document.getElementById('categoriesList');
+    if (!container) return;
+
+    [...container.children].forEach((card, index) => {
+      const cat = (window.LianDataOrder?.sortCategories(sheetCategories) || sheetCategories || [])[index];
+      if (!cat) return;
+      card.draggable = true;
+      card.dataset.sortCategoryId = String(cat.id || cat.name);
+      card.classList.add('cursor-grab');
+      card.title = 'Drag untuk mengubah urutan kategori';
+    });
+
+    if (container.dataset.dragSortV126 === 'true') return;
+    container.dataset.dragSortV126 = 'true';
+
+    container.addEventListener('dragstart', event => {
+      const card = event.target.closest('[data-sort-category-id]');
+      if (!card) return;
+      dragState.type = 'category';
+      dragState.id = card.dataset.sortCategoryId;
+      card.classList.add('dragging', 'opacity-60');
+    });
+
+    container.addEventListener('dragover', event => {
+      if (dragState.type !== 'category') return;
+      event.preventDefault();
+      const after = getCardAfter(container, event.clientY);
+      const dragging = container.querySelector('.dragging');
+      if (!dragging) return;
+      if (after == null) container.appendChild(dragging);
+      else container.insertBefore(dragging, after);
+    });
+
+    container.addEventListener('dragend', async event => {
+      const card = event.target.closest('[data-sort-category-id]');
+      if (card) card.classList.remove('dragging', 'opacity-60');
+      if (dragState.type === 'category') await saveCategoryOrderFromDom(container);
+      dragState.type = '';
+      dragState.id = '';
+    });
+  }
+
+  function clearItemsPageDrag() {
+    const container = document.getElementById('itemsList');
+    if (!container) return;
+    [...container.querySelectorAll('[data-sort-item-id], [draggable="true"]')].forEach(card => {
+      card.removeAttribute('draggable');
+      card.removeAttribute('data-sort-item-id');
+      card.classList.remove('cursor-grab');
+      if (card.getAttribute('title') === 'Drag untuk mengubah urutan item dalam kategori yang sama') {
+        card.removeAttribute('title');
+      }
+    });
+  }
+
+  function enhanceCategoryDropdownItemDrag() {
+    if (!isAdminForSort()) return;
+    document.querySelectorAll('.category-dropdown-content').forEach(container => {
+      const categoryId = container.dataset.sortCategoryId || '';
+      const categoryKey = container.dataset.sortCategoryKey || '';
+      const categoryItems = (window.LianDataOrder?.sortItems(sheetItems || []) || sheetItems || [])
+        .filter(item => {
+          const itemCatKey = window.LianDataOrder?.key(item.category);
+          return categoryKey && itemCatKey === categoryKey;
+        });
+
+      [...container.querySelectorAll('[data-category-item-row="true"]')].forEach((row, index) => {
+        const item = categoryItems[index];
+        if (!item?.id) return;
+        row.draggable = true;
+        row.dataset.sortItemId = String(item.id);
+        row.dataset.sortCategoryId = categoryId;
+        row.classList.add('cursor-grab');
+        row.title = 'Drag untuk mengubah urutan item di kategori ini';
+      });
+    });
+  }
+
+  function installCategoryDropdownItemDragEvents() {
+    if (document.body.dataset.itemDropdownDragV126 === 'true') return;
+    document.body.dataset.itemDropdownDragV126 = 'true';
+
+    document.body.addEventListener('click', async event => {
+      const button = event.target.closest('.category-item-move-btn');
+      if (!button) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const row = button.closest('[data-category-item-row="true"]');
+      const list = row?.parentElement;
+      const container = row?.closest('.category-dropdown-content');
+      if (!row || !list || !container) return;
+
+      const direction = button.dataset.moveItem;
+      if (direction === 'up' && row.previousElementSibling) {
+        list.insertBefore(row, row.previousElementSibling);
+      } else if (direction === 'down' && row.nextElementSibling) {
+        list.insertBefore(row.nextElementSibling, row);
+      } else {
+        return;
+      }
+
+      dragState.type = 'item';
+      dragState.id = row.dataset.sortItemId || '';
+      renumberCategoryItemRows(container);
+      await saveItemOrderFromDom(container);
+      dragState.type = '';
+      dragState.id = '';
+    });
+
+    document.body.addEventListener('dragstart', event => {
+      const row = event.target.closest('.category-dropdown-content [data-sort-item-id]');
+      if (!row) return;
+      dragState.type = 'item';
+      dragState.id = row.dataset.sortItemId;
+      row.classList.add('dragging', 'opacity-60');
+    });
+
+    document.body.addEventListener('dragover', event => {
+      if (dragState.type !== 'item') return;
+      const container = event.target.closest('.category-dropdown-content');
+      if (!container) return;
+      event.preventDefault();
+      const dragging = container.querySelector('.dragging');
+      if (!dragging) return;
+      const list = dragging.parentElement || container.querySelector('.grid');
+      if (!list) return;
+      const after = getCardAfter(list, event.clientY);
+      if (after == null) list.appendChild(dragging);
+      else list.insertBefore(dragging, after);
+      renumberCategoryItemRows(container);
+    });
+
+    document.body.addEventListener('dragend', async event => {
+      const row = event.target.closest('.category-dropdown-content [data-sort-item-id]');
+      if (row) row.classList.remove('dragging', 'opacity-60');
+      const container = row?.closest('.category-dropdown-content');
+      if (dragState.type === 'item' && container) await saveItemOrderFromDom(container);
+      dragState.type = '';
+      dragState.id = '';
+    });
+  }
+
+  function wrapRender(name, enhancer) {
+    const original = window[name];
+    if (typeof original !== 'function' || original.__dragSortV126) return;
+    const wrapped = function (...args) {
+      const result = original.apply(this, args);
+      requestAnimationFrame(enhancer);
+      return result;
+    };
+    wrapped.__dragSortV126 = true;
+    window[name] = wrapped;
+    try { window.eval(`${name} = window.${name}`); } catch (_) {}
+  }
+
+  function boot() {
+    wrapRender('renderCategories', enhanceCategoryDrag);
+    wrapRender('renderItems', () => {
+      clearItemsPageDrag();
+      enhanceCategoryDropdownItemDrag();
+    });
+    requestAnimationFrame(() => {
+      enhanceCategoryDrag();
+      clearItemsPageDrag();
+      enhanceCategoryDropdownItemDrag();
+    });
+    [300, 900, 1800, 3200].forEach(delay => {
+      setTimeout(() => {
+        enhanceCategoryDrag();
+        clearItemsPageDrag();
+        enhanceCategoryDropdownItemDrag();
+      }, delay);
+    });
+    installCategoryDropdownItemDragEvents();
+
+    let observerTimer = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(observerTimer);
+      observerTimer = setTimeout(() => {
+        enhanceCategoryDrag();
+        clearItemsPageDrag();
+        enhanceCategoryDropdownItemDrag();
+      }, 150);
+    });
+
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
+  else boot();
 })();
 </script>
 
