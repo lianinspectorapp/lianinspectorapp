@@ -6,6 +6,9 @@
 let vehicleAutosaveTimer = null;
 let lastVehicleDraft = '';
 let itemAutosaveTimers = {};
+let photoUploadInProgressCount = 0;
+let failedPhotoUploadCount = 0;
+let pendingPhotoUploads = {};
 let editingInspectionId = null;
 let editingSourceDraftId = null;
 let deselectedInspectionItemIds = new Set();
@@ -2687,6 +2690,9 @@ async function restoreOfflineDraft(options = {}) {
             const previewDiv = document.createElement('div');
             previewDiv.className = 'relative rounded-lg overflow-hidden border-2 border-blue-300 bg-gray-100 h-24 shadow-sm';
             previewDiv.dataset.tempPhoto = 'true';
+            previewDiv.dataset.uploadStatus = 'uploading';
+            const pendingId = `photo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            previewDiv.dataset.pendingPhotoId = pendingId;
             previewDiv.innerHTML = `
                 <img src="${previewUrl}" alt="Foto lokal" class="w-full h-full object-cover">
                 <div class="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[10px] text-center py-1 font-semibold flex items-center justify-center gap-1">
@@ -2696,16 +2702,39 @@ async function restoreOfflineDraft(options = {}) {
             `;
             galleryDiv.prepend(previewDiv);
 
-            return { previewUrl, previewDiv };
+            return { previewUrl, previewDiv, pendingId, itemId };
         }
 
         function markTemporaryPhotoFailed(tempPreview) {
             if (!tempPreview?.previewDiv) return;
-            const badge = tempPreview.previewDiv.querySelector('div');
-            if (badge) {
-                badge.textContent = 'Upload gagal';
-                badge.className = 'absolute inset-x-0 bottom-0 bg-red-600/90 text-white text-[10px] text-center py-1 font-semibold';
-            }
+            tempPreview.previewDiv.dataset.uploadStatus = 'failed';
+            const pendingId = tempPreview.previewDiv.dataset.pendingPhotoId || tempPreview.pendingId || '';
+            const imgHtml = tempPreview.previewDiv.querySelector('img')?.outerHTML || '';
+            tempPreview.previewDiv.innerHTML = `
+                ${imgHtml}
+                <button type="button" data-remove-temp-photo-id="${pendingId}" class="absolute top-1 right-1 z-20 bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm font-black shadow-lg border border-white/80 transition-all" title="Hapus foto" aria-label="Hapus foto">×</button>
+                <div data-upload-overlay="true" class="absolute inset-0 bg-black/20 flex items-center justify-center">
+                    <button type="button" data-retry-photo-id="${pendingId}" class="w-11 h-11 rounded-full bg-white/95 text-red-600 shadow-lg border border-red-200 flex items-center justify-center font-black text-2xl leading-none" title="Upload ulang foto" aria-label="Upload ulang foto">
+                        ↻
+                    </button>
+                </div>
+                <div data-upload-overlay="true" class="absolute inset-x-0 bottom-0 bg-red-600/90 text-white text-[10px] text-center py-1 font-semibold">Upload gagal</div>
+            `;
+        }
+
+        function clearFailedTemporaryPhotoPreviews(itemId) {
+            const itemElement = document.querySelector(`[data-itemid="${itemId}"]`);
+            if (!itemElement) return;
+
+            itemElement
+                .querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]')
+                .forEach(node => {
+                    const pendingId = node.dataset.pendingPhotoId;
+                    if (pendingId) delete pendingPhotoUploads[pendingId];
+                    node.remove();
+                });
+
+            failedPhotoUploadCount = document.querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]').length;
         }
 
         function clearTemporaryPhotoPreview(tempPreview) {
@@ -2713,9 +2742,146 @@ async function restoreOfflineDraft(options = {}) {
             try {
                 if (tempPreview.previewUrl) URL.revokeObjectURL(tempPreview.previewUrl);
             } catch (_) {}
+            if (tempPreview.pendingId) delete pendingPhotoUploads[tempPreview.pendingId];
             if (tempPreview.previewDiv?.parentNode) {
                 tempPreview.previewDiv.remove();
             }
+        }
+
+        function addUploadedPhotoToInspectionItem(itemId, photo) {
+            if (!itemId || !photo) return -1;
+
+            const itemMeta = touchInspectionItemData(itemId);
+            if (!Array.isArray(itemMeta.photos)) itemMeta.photos = [];
+            itemMeta.photos.push(photo);
+            itemMeta.updatedAt = new Date().toISOString();
+            saveCurrentInspectionDraft();
+            return itemMeta.photos.length - 1;
+        }
+
+        function markTemporaryPhotoUploaded(tempPreview, uploadedPhoto, photoIndex) {
+            if (!tempPreview?.previewDiv || !uploadedPhoto) return;
+
+            tempPreview.previewDiv.dataset.uploadStatus = 'uploaded';
+            tempPreview.previewDiv.dataset.itemId = tempPreview.itemId || '';
+            tempPreview.previewDiv.dataset.photoIndex = String(photoIndex);
+            delete tempPreview.previewDiv.dataset.tempPhoto;
+            tempPreview.previewDiv.querySelectorAll('[data-upload-overlay="true"]').forEach(node => node.remove());
+
+            const src = getPhotoSrc(uploadedPhoto);
+            tempPreview.previewDiv.innerHTML = `
+                <img src="${src}" alt="Foto berhasil upload" class="w-full h-full object-cover">
+                <button type="button" data-remove-uploaded-retry-photo="true" class="absolute top-1 right-1 z-20 bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm font-black shadow-lg border border-white/80 transition-all" title="Hapus foto" aria-label="Hapus foto">×</button>
+                <div class="absolute inset-x-0 bottom-0 bg-green-600/90 text-white text-[10px] text-center py-1 font-semibold">Upload berhasil</div>
+            `;
+
+            if (tempPreview.pendingId) delete pendingPhotoUploads[tempPreview.pendingId];
+            failedPhotoUploadCount = document.querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]').length;
+        }
+
+        async function retryPendingPhotoUpload(pendingId) {
+            const pending = pendingPhotoUploads[pendingId];
+            if (!pending) {
+                showSubmitGuardNotice('File foto gagal tidak ditemukan. Silakan ambil/upload foto ulang.', 'error');
+                return;
+            }
+
+            if (!navigator.onLine) {
+                showSubmitGuardNotice('Tidak ada koneksi internet. Hidupkan koneksi lalu coba upload ulang.', 'error');
+                return;
+            }
+
+            const temp = pending.temp;
+            if (temp?.previewDiv) {
+                temp.previewDiv.dataset.uploadStatus = 'uploading';
+                temp.previewDiv.querySelectorAll('[data-upload-overlay="true"]').forEach(node => node.remove());
+                temp.previewDiv.insertAdjacentHTML('beforeend', `
+                    <div data-upload-overlay="true" class="absolute inset-0 bg-black/35 flex items-center justify-center">
+                        <span class="inline-block w-8 h-8 rounded-full border-4 border-white/50 border-t-white animate-spin"></span>
+                    </div>
+                    <div data-upload-overlay="true" class="absolute inset-x-0 bottom-0 bg-black/70 text-white text-[10px] text-center py-1 font-semibold">Mengupload...</div>
+                `);
+            }
+
+            photoUploadInProgressCount += 1;
+
+            try {
+                const uploadedPhoto = await uploadPhotoToDrive(pending.file);
+                const uploadedUrl = typeof uploadedPhoto === 'string'
+                    ? normalizeDrivePhotoUrl(uploadedPhoto)
+                    : uploadedPhoto.url;
+
+                const finalPhoto = {
+                    ...(typeof uploadedPhoto === 'object' ? uploadedPhoto : {}),
+                    url: uploadedUrl,
+                    photo_url: uploadedUrl,
+                    viewUrl: typeof uploadedPhoto === 'object' ? (uploadedPhoto.viewUrl || getPhotoOpenUrl(uploadedPhoto)) : uploadedUrl,
+                    previewUrl: pending.localPreview || uploadedUrl,
+                    fileName: pending.originalFile?.name || pending.file?.name || `inspection_photo_${Date.now()}.jpg`,
+                    uploadedFileName: pending.file?.name || '',
+                    mimeType: pending.file?.type || 'image/jpeg',
+                    originalSize: pending.stat?.originalSize || pending.originalFile?.size || 0,
+                    optimizedSize: pending.stat?.optimizedSize || pending.file?.size || 0,
+                    optimized: Boolean(pending.stat?.optimized),
+                    maxLongEdge: INSPECTION_PHOTO_OPTIMIZE_CONFIG.maxLongEdge,
+                    uploadedAt: new Date().toISOString()
+                };
+
+                const photoIndex = addUploadedPhotoToInspectionItem(pending.itemId, finalPhoto);
+                markTemporaryPhotoUploaded(temp, finalPhoto, photoIndex);
+                clearSubmitGuardNotice();
+                showToast('Foto berhasil diupload ulang');
+            } catch (err) {
+                console.error('Retry upload error:', err);
+                if (temp?.previewDiv) markTemporaryPhotoFailed(temp);
+                showSubmitGuardNotice('Upload ulang foto masih gagal. Cek koneksi lalu coba lagi.', 'error');
+            } finally {
+                photoUploadInProgressCount = Math.max(0, photoUploadInProgressCount - 1);
+            }
+        }
+
+        if (!window.__photoRetryHandlerInstalled) {
+            document.addEventListener('click', event => {
+                const removeUploadedBtn = event.target?.closest?.('[data-remove-uploaded-retry-photo="true"]');
+                if (removeUploadedBtn) {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    const card = removeUploadedBtn.closest('[data-upload-status="uploaded"]');
+                    const itemId = card?.dataset.itemId || '';
+                    const photoIndex = Number(card?.dataset.photoIndex);
+
+                    if (itemId && Number.isInteger(photoIndex) && inspectionItemsData[itemId + '_data']?.photos) {
+                        inspectionItemsData[itemId + '_data'].photos.splice(photoIndex, 1);
+                        inspectionItemsData[itemId + '_data'].updatedAt = new Date().toISOString();
+                        saveCurrentInspectionDraft();
+                    }
+
+                    card?.remove();
+                    return;
+                }
+
+                const removeTempBtn = event.target?.closest?.('[data-remove-temp-photo-id]');
+                if (removeTempBtn) {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    const pendingId = removeTempBtn.dataset.removeTempPhotoId;
+                    if (pendingId) delete pendingPhotoUploads[pendingId];
+
+                    removeTempBtn.closest('[data-temp-photo="true"]')?.remove();
+                    failedPhotoUploadCount = document.querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]').length;
+                    if (failedPhotoUploadCount === 0) clearSubmitGuardNotice();
+                    return;
+                }
+
+                const retryBtn = event.target?.closest?.('[data-retry-photo-id]');
+                if (!retryBtn) return;
+                event.preventDefault();
+                event.stopPropagation();
+                retryPendingPhotoUpload(retryBtn.dataset.retryPhotoId);
+            });
+            window.__photoRetryHandlerInstalled = true;
         }
 
         window.openPhotoPreview = (itemId, photoIndex) => {
@@ -2984,6 +3150,8 @@ async function restoreOfflineDraft(options = {}) {
             files = Array.from(files || []);
             if (files.length === 0) return;
 
+            clearFailedTemporaryPhotoPreviews(itemId);
+
             const photos = [];
             const failed = [];
             const tempPreviews = [];
@@ -3053,6 +3221,19 @@ async function restoreOfflineDraft(options = {}) {
                 const temp = tempPreviews[index];
                 const stat = optimizationStats[index] || {};
 
+                if (temp?.pendingId) {
+                    pendingPhotoUploads[temp.pendingId] = {
+                        itemId,
+                        file,
+                        originalFile,
+                        temp,
+                        stat,
+                        localPreview: localPreviews[index] || ''
+                    };
+                }
+
+                photoUploadInProgressCount += 1;
+
                 try {
                     const uploadedPhoto = await uploadPhotoToDrive(file);
                     const uploadedUrl = typeof uploadedPhoto === 'string' ? normalizeDrivePhotoUrl(uploadedPhoto) : uploadedPhoto.url;
@@ -3077,7 +3258,11 @@ async function restoreOfflineDraft(options = {}) {
                 } catch (err) {
                     console.error('Upload error:', err);
                     failed.push(`${originalFile?.name || file.name || 'foto'}: ${err.message || err}`);
+                    failedPhotoUploadCount += 1;
                     markTemporaryPhotoFailed(temp);
+                    showSubmitGuardNotice('Upload foto gagal. Hidupkan koneksi lalu upload ulang foto sebelum submit.', 'error');
+                } finally {
+                    photoUploadInProgressCount = Math.max(0, photoUploadInProgressCount - 1);
                 }
             }
 
@@ -3282,6 +3467,138 @@ async function restoreOfflineDraft(options = {}) {
             }).length;
         }
 
+        function getSubmitGuardNoticeElement() {
+            const submitBtn = document.getElementById('submitInspectionBtn');
+            if (!submitBtn) return null;
+
+            let notice = document.getElementById('submitInspectionGuardNotice');
+            if (!notice) {
+                notice = document.createElement('div');
+                notice.id = 'submitInspectionGuardNotice';
+                notice.className = 'hidden mt-3 rounded-xl border px-3 py-2 text-xs font-bold leading-relaxed';
+
+                const anchor = submitBtn.parentElement || submitBtn;
+                anchor.insertAdjacentElement('afterend', notice);
+            }
+
+            return notice;
+        }
+
+        function showSubmitGuardNotice(message, type = 'error') {
+            const notice = getSubmitGuardNoticeElement();
+            const submitBtn = document.getElementById('submitInspectionBtn');
+
+            if (submitBtn) {
+                submitBtn.disabled = false;
+            }
+
+            if (notice) {
+                const isError = type === 'error';
+                notice.textContent = message;
+                notice.className = `mt-3 rounded-xl border px-3 py-2 text-xs font-bold leading-relaxed ${
+                    isError
+                        ? 'border-red-200 bg-red-50 text-red-700'
+                        : 'border-amber-200 bg-amber-50 text-amber-700'
+                }`;
+            }
+
+            let floatingNotice = document.getElementById('submitInspectionGuardFloatingNotice');
+            if (!floatingNotice) {
+                floatingNotice = document.createElement('div');
+                floatingNotice.id = 'submitInspectionGuardFloatingNotice';
+                document.body.appendChild(floatingNotice);
+            }
+
+            floatingNotice.textContent = message;
+            floatingNotice.style.cssText = [
+                'position:fixed',
+                'left:12px',
+                'right:12px',
+                'bottom:86px',
+                'z-index:2147483647',
+                'padding:12px 14px',
+                'border-radius:14px',
+                'font-size:13px',
+                'font-weight:900',
+                'line-height:1.35',
+                'box-shadow:0 18px 45px rgba(15,23,42,.22)',
+                'border:1.5px solid #fecaca',
+                'background:#fef2f2',
+                'color:#991b1b',
+                'text-align:left',
+                'max-width:680px',
+                'margin:0 auto'
+            ].join(';');
+
+            console.warn('[submit guard]', message);
+
+            clearTimeout(window.__submitGuardFloatingTimer);
+            window.__submitGuardFloatingTimer = setTimeout(() => {
+                document.getElementById('submitInspectionGuardFloatingNotice')?.remove();
+            }, 4200);
+
+            if (typeof showToast === 'function') {
+                showToast(message, type);
+            } else {
+                console.warn(message);
+            }
+        }
+
+        function clearSubmitGuardNotice() {
+            const notice = document.getElementById('submitInspectionGuardNotice');
+            if (notice) {
+                notice.classList.add('hidden');
+                notice.textContent = '';
+            }
+
+            document.getElementById('submitInspectionGuardFloatingNotice')?.remove();
+        }
+
+        function countTemporaryPhotoNodesByStatus(status) {
+            const expected = String(status || '').toLowerCase();
+            return Array.from(document.querySelectorAll('[data-temp-photo="true"]')).filter(node => {
+                const nodeStatus = String(node.dataset.uploadStatus || '').toLowerCase();
+                const text = String(node.textContent || '').toLowerCase();
+
+                if (expected === 'failed') {
+                    return nodeStatus === 'failed' || text.includes('upload gagal') || text.includes('gagal upload');
+                }
+
+                if (expected === 'uploading') {
+                    return nodeStatus === 'uploading' || text.includes('mengupload') || text.includes('uploading');
+                }
+
+                return nodeStatus === expected;
+            }).length;
+        }
+
+        function getPhotoSubmitGuardMessage() {
+            if (!navigator.onLine) {
+                return 'Tidak ada koneksi internet. Submit laporan ditahan agar foto tidak hilang dari laporan.';
+            }
+
+            const uploadingCount = Math.max(
+                photoUploadInProgressCount,
+                countTemporaryPhotoNodesByStatus('uploading')
+            );
+
+            if (uploadingCount > 0) {
+                return `Masih ada ${uploadingCount} foto yang sedang upload. Tunggu sampai selesai sebelum submit.`;
+            }
+
+            const failedCount = Math.max(
+                failedPhotoUploadCount,
+                countTemporaryPhotoNodesByStatus('failed')
+            );
+            failedPhotoUploadCount = failedCount;
+
+            if (failedCount > 0) {
+                return `Ada ${failedCount} foto yang gagal upload. Upload ulang foto tersebut sebelum submit.`;
+            }
+
+            return '';
+        }
+
         async function submitInspection(e) {
             if (e) {
                 e.preventDefault();
@@ -3292,6 +3609,13 @@ async function restoreOfflineDraft(options = {}) {
 
             const btn = document.getElementById('submitInspectionBtn');
             if (btn?.disabled) return;
+
+            const photoGuardMessage = getPhotoSubmitGuardMessage();
+            if (photoGuardMessage) {
+                showSubmitGuardNotice(photoGuardMessage, 'error');
+                return;
+            }
+            clearSubmitGuardNotice();
 
             const hydratedDraft = await hydrateInspectionStateBeforeSubmit();
             const editTargetInspectionId = getEditingInspectionIdFromDraft(hydratedDraft);
