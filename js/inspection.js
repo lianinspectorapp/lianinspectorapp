@@ -6,6 +6,8 @@
 let vehicleAutosaveTimer = null;
 let lastVehicleDraft = '';
 let itemAutosaveTimers = {};
+let photoUploadInProgressCount = 0;
+let failedPhotoUploadCount = 0;
 let editingInspectionId = null;
 let editingSourceDraftId = null;
 let deselectedInspectionItemIds = new Set();
@@ -2687,6 +2689,7 @@ async function restoreOfflineDraft(options = {}) {
             const previewDiv = document.createElement('div');
             previewDiv.className = 'relative rounded-lg overflow-hidden border-2 border-blue-300 bg-gray-100 h-24 shadow-sm';
             previewDiv.dataset.tempPhoto = 'true';
+            previewDiv.dataset.uploadStatus = 'uploading';
             previewDiv.innerHTML = `
                 <img src="${previewUrl}" alt="Foto lokal" class="w-full h-full object-cover">
                 <div class="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[10px] text-center py-1 font-semibold flex items-center justify-center gap-1">
@@ -2701,11 +2704,23 @@ async function restoreOfflineDraft(options = {}) {
 
         function markTemporaryPhotoFailed(tempPreview) {
             if (!tempPreview?.previewDiv) return;
+            tempPreview.previewDiv.dataset.uploadStatus = 'failed';
             const badge = tempPreview.previewDiv.querySelector('div');
             if (badge) {
                 badge.textContent = 'Upload gagal';
                 badge.className = 'absolute inset-x-0 bottom-0 bg-red-600/90 text-white text-[10px] text-center py-1 font-semibold';
             }
+        }
+
+        function clearFailedTemporaryPhotoPreviews(itemId) {
+            const itemElement = document.querySelector(`[data-itemid="${itemId}"]`);
+            if (!itemElement) return;
+
+            itemElement
+                .querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]')
+                .forEach(node => node.remove());
+
+            failedPhotoUploadCount = document.querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]').length;
         }
 
         function clearTemporaryPhotoPreview(tempPreview) {
@@ -2984,6 +2999,8 @@ async function restoreOfflineDraft(options = {}) {
             files = Array.from(files || []);
             if (files.length === 0) return;
 
+            clearFailedTemporaryPhotoPreviews(itemId);
+
             const photos = [];
             const failed = [];
             const tempPreviews = [];
@@ -3053,6 +3070,8 @@ async function restoreOfflineDraft(options = {}) {
                 const temp = tempPreviews[index];
                 const stat = optimizationStats[index] || {};
 
+                photoUploadInProgressCount += 1;
+
                 try {
                     const uploadedPhoto = await uploadPhotoToDrive(file);
                     const uploadedUrl = typeof uploadedPhoto === 'string' ? normalizeDrivePhotoUrl(uploadedPhoto) : uploadedPhoto.url;
@@ -3077,7 +3096,10 @@ async function restoreOfflineDraft(options = {}) {
                 } catch (err) {
                     console.error('Upload error:', err);
                     failed.push(`${originalFile?.name || file.name || 'foto'}: ${err.message || err}`);
+                    failedPhotoUploadCount += 1;
                     markTemporaryPhotoFailed(temp);
+                } finally {
+                    photoUploadInProgressCount = Math.max(0, photoUploadInProgressCount - 1);
                 }
             }
 
@@ -3282,6 +3304,32 @@ async function restoreOfflineDraft(options = {}) {
             }).length;
         }
 
+        function getPhotoSubmitGuardMessage() {
+            if (!navigator.onLine) {
+                return 'Tidak ada koneksi internet. Submit laporan ditahan agar foto tidak hilang dari laporan.';
+            }
+
+            const uploadingCount = Math.max(
+                photoUploadInProgressCount,
+                document.querySelectorAll('[data-temp-photo="true"][data-upload-status="uploading"]').length
+            );
+
+            if (uploadingCount > 0) {
+                return `Masih ada ${uploadingCount} foto yang sedang upload. Tunggu sampai selesai sebelum submit.`;
+            }
+
+            const failedCount = Math.max(
+                failedPhotoUploadCount,
+                document.querySelectorAll('[data-temp-photo="true"][data-upload-status="failed"]').length
+            );
+
+            if (failedCount > 0) {
+                return `Ada ${failedCount} foto yang gagal upload. Upload ulang foto tersebut atau hapus dari inspeksi sebelum submit.`;
+            }
+
+            return '';
+        }
+
         async function submitInspection(e) {
             if (e) {
                 e.preventDefault();
@@ -3292,6 +3340,12 @@ async function restoreOfflineDraft(options = {}) {
 
             const btn = document.getElementById('submitInspectionBtn');
             if (btn?.disabled) return;
+
+            const photoGuardMessage = getPhotoSubmitGuardMessage();
+            if (photoGuardMessage) {
+                showToast(photoGuardMessage, 'error');
+                return;
+            }
 
             const hydratedDraft = await hydrateInspectionStateBeforeSubmit();
             const editTargetInspectionId = getEditingInspectionIdFromDraft(hydratedDraft);
