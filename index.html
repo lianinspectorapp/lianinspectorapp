@@ -1468,6 +1468,17 @@ updateDashboard();
 switchView('dashboardView');
 
 showToast(`Selamat datang, ${user.username}!`);
+
+if (typeof recoverPendingInspectionsForCurrentUser === 'function') {
+  recoverPendingInspectionsForCurrentUser().then(result => {
+    if (result?.synced > 0) {
+      showToast('Laporan pending berhasil masuk ke history');
+      if (typeof renderDraftInspectionCards === 'function') renderDraftInspectionCards();
+    } else if (result?.failed > 0) {
+      showToast('Ada laporan pending yang masih tersimpan lokal', 'error');
+    }
+  }).catch(err => console.warn('Recovery pending submit gagal:', err));
+}
         });
 		 
 
