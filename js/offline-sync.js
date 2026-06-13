@@ -1001,6 +1001,64 @@ async function syncPendingInspections() {
     }
 }
 
+function isPendingFinalInspectionDraft(draft = {}) {
+    if (!draft) return false;
+    return Boolean(
+        draft.status === 'pending_sync' ||
+        draft.syncStatus === 'pending' ||
+        draft.syncStatus === 'error'
+    );
+}
+
+async function getPendingOfflineInspectionsForCurrentUser() {
+    if (!offlineDB || !currentUser) return [];
+
+    const drafts = await getRawOfflineInspections();
+    return (drafts || [])
+        .filter(isPendingFinalInspectionDraft)
+        .filter(draft => {
+            if (typeof isDraftOwnedByCurrentUser !== 'function') return true;
+            return isDraftOwnedByCurrentUser(draft);
+        })
+        .sort((a, b) => {
+            const aTime = new Date(a.submittedAt || a.updatedAt || a.createdAt || 0).getTime();
+            const bTime = new Date(b.submittedAt || b.updatedAt || b.createdAt || 0).getTime();
+            return bTime - aTime;
+        });
+}
+
+async function recoverPendingInspectionsForCurrentUser({ refresh = true } = {}) {
+    if (!navigator.onLine || !offlineDB || !currentUser) {
+        return { synced: 0, failed: 0, skipped: true };
+    }
+
+    if (syncInProgress) {
+        return { synced: 0, failed: 0, skipped: true, inProgress: true };
+    }
+
+    syncInProgress = true;
+
+    try {
+        const pending = await getPendingOfflineInspectionsForCurrentUser();
+        let synced = 0;
+        let failed = 0;
+
+        for (const draft of pending) {
+            const result = await syncOfflineInspectionById(draft.id);
+            if (result.ok) synced += 1;
+            else failed += 1;
+        }
+
+        if (refresh && synced > 0 && typeof loadInitialData === 'function') {
+            await loadInitialData();
+        }
+
+        return { synced, failed, skipped: false };
+    } finally {
+        syncInProgress = false;
+    }
+}
+
 window.addEventListener('online', () => {
     console.log('🌐 Online, sinkronisasi dimulai');
 
@@ -1008,7 +1066,11 @@ window.addEventListener('online', () => {
         syncActiveDraftsToSupabase().catch(console.error);
     }
 
-    syncPendingInspections();
+    if (currentUser && typeof recoverPendingInspectionsForCurrentUser === 'function') {
+        recoverPendingInspectionsForCurrentUser().catch(console.error);
+    } else {
+        syncPendingInspections();
+    }
 });
 
 // Export eksplisit agar aman walaupun urutan script berubah.
@@ -1027,6 +1089,8 @@ window.deleteOfflineInspection = deleteOfflineInspection;
 window.markInspectionReadyToSync = markInspectionReadyToSync;
 window.syncOfflineInspectionById = syncOfflineInspectionById;
 window.syncPendingInspections = syncPendingInspections;
+window.getPendingOfflineInspectionsForCurrentUser = getPendingOfflineInspectionsForCurrentUser;
+window.recoverPendingInspectionsForCurrentUser = recoverPendingInspectionsForCurrentUser;
 window.syncActiveDraftsToSupabase = syncActiveDraftsToSupabase;
 window.syncAllOfflineData = syncAllOfflineData;
 window.upsertActiveInspectionToSupabase = upsertActiveInspectionToSupabase;
