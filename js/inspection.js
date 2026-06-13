@@ -293,8 +293,11 @@ function prepareInspectionLandingView() {
         if (emptyState) emptyState.classList.add('hidden');
         renderDraftInspectionCards();
     } else {
-        hideDraftMonitoringCards();
-        if (emptyState) emptyState.classList.remove('hidden');
+        renderPendingSubmitInspectionCards().then(hasPending => {
+            if (hasPending) return;
+            hideDraftMonitoringCards();
+            if (emptyState) emptyState.classList.remove('hidden');
+        });
     }
 }
 
@@ -312,6 +315,123 @@ function isDraftActiveMonitoringCandidate(draft) {
 
     return true;
 }
+
+function isPendingSubmitInspectionCandidate(draft) {
+    if (!draft || !hasInspectionDraftContent(draft)) return false;
+
+    const isPending = draft.status === 'pending_sync' ||
+        draft.syncStatus === 'pending' ||
+        draft.syncStatus === 'error';
+
+    if (!isPending) return false;
+
+    if (typeof isDraftOwnedByCurrentUser === 'function') {
+        return isDraftOwnedByCurrentUser(draft);
+    }
+
+    return true;
+}
+
+function buildPendingSubmitInspectionCard(draft) {
+    const vehicle = draft.vehicleData || {};
+    const clientName = escapeHtml(vehicle.customerName || '-');
+    const vehicleName = escapeHtml(vehicle.vehicleType || '-');
+    const vehiclePlate = escapeHtml(vehicle.vehiclePlate || '-');
+    const submittedAt = draft.submittedAt || draft.updatedAt || draft.createdAt;
+    const submitTime = submittedAt
+        ? new Date(submittedAt).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })
+        : '-';
+    const isError = draft.syncStatus === 'error';
+    const statusText = isError ? 'Gagal sync, perlu dicoba lagi' : 'Menunggu sinkronisasi laporan';
+    const statusClass = isError ? 'text-red-600' : 'text-amber-600';
+    const borderClass = isError ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50';
+
+    return `
+<div class="rounded-2xl border ${borderClass} shadow-sm p-4 mb-3" data-pending-submit-card="true">
+    <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 mb-2">
+                <div class="w-2.5 h-2.5 rounded-full ${isError ? 'bg-red-500' : 'bg-amber-500'}"></div>
+                <p class="text-xs font-black ${statusClass} uppercase tracking-wide">${statusText}</p>
+            </div>
+            <p class="text-sm font-black text-gray-800 leading-tight">${vehicleName}</p>
+            <p class="text-xs font-bold text-gray-600 mt-1">${vehiclePlate} - ${clientName}</p>
+            <p class="text-[11px] font-semibold text-gray-500 mt-2">Submit terakhir: ${escapeHtml(submitTime)}</p>
+        </div>
+        <button type="button" data-retry-pending-id="${escapeHtml(draft.id || '')}" class="px-3 py-2 rounded-xl bg-white border border-gray-200 text-xs font-black text-gray-700 hover:bg-gray-50 shadow-sm">
+            Coba Sync
+        </button>
+    </div>
+</div>
+`;
+}
+
+async function renderPendingSubmitInspectionCards() {
+    if (!currentUser || isInspectionFormVisible()) return false;
+
+    const container = document.getElementById('draftInspectionContainer');
+    const emptyState = document.getElementById('emptyInspectionState');
+    if (!container || typeof getPendingOfflineInspectionsForCurrentUser !== 'function') return false;
+
+    const pendingDrafts = await getPendingOfflineInspectionsForCurrentUser();
+    const visiblePending = (pendingDrafts || []).filter(isPendingSubmitInspectionCandidate);
+
+    if (visiblePending.length === 0) return false;
+
+    relocateDraftMonitoringContainer();
+    if (emptyState) emptyState.classList.add('hidden');
+    container.classList.remove('hidden');
+    container.innerHTML = `
+<div class="mb-3 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+    <p class="text-sm font-black text-blue-800">Laporan sedang diamankan</p>
+    <p class="text-xs font-semibold text-blue-700 mt-1">Aplikasi sempat tertutup saat submit. Data masih tersimpan lokal dan akan dicoba sync ulang.</p>
+</div>
+${visiblePending.map(buildPendingSubmitInspectionCard).join('')}`;
+
+    return true;
+}
+
+async function retryPendingInspectionSubmit(draftId) {
+    if (!draftId || typeof syncOfflineInspectionById !== 'function') return;
+
+    if (typeof syncInProgress !== 'undefined' && syncInProgress) {
+        showToast('Sync laporan masih berjalan...');
+        return;
+    }
+
+    syncInProgress = true;
+
+    try {
+        showToast('Mencoba sync laporan...');
+        const result = await syncOfflineInspectionById(draftId);
+
+        if (result.ok) {
+            showToast('Laporan berhasil masuk ke history');
+            if (typeof loadInitialData === 'function') await loadInitialData();
+            if (typeof switchView === 'function') switchView('historyView');
+            return;
+        }
+
+        showToast('Laporan masih tersimpan lokal. Coba lagi saat koneksi stabil.', 'error');
+        await renderPendingSubmitInspectionCards();
+    } catch (err) {
+        console.error('Retry pending submit gagal:', err);
+        showToast('Gagal sync laporan: ' + (err.message || err), 'error');
+    } finally {
+        syncInProgress = false;
+    }
+}
+
+if (!window.__pendingSubmitRetryHandlerInstalled) {
+    document.addEventListener('click', event => {
+        const button = event.target?.closest?.('[data-retry-pending-id]');
+        if (!button) return;
+        retryPendingInspectionSubmit(button.dataset.retryPendingId);
+    });
+    window.__pendingSubmitRetryHandlerInstalled = true;
+}
+
+window.retryPendingInspectionSubmit = retryPendingInspectionSubmit;
 
 function normalizeDraftCompareText(value) {
     return String(value ?? '').trim().toLowerCase();
@@ -1148,12 +1268,13 @@ async function renderDraftInspectionCards() {
 
         const activeDrafts = dedupeActiveDrafts([...(localDrafts || []), ...(cloudDrafts || [])])
             .filter(isDraftActiveMonitoringCandidate);
+        const pendingDrafts = (localDrafts || []).filter(isPendingSubmitInspectionCandidate);
 
         // Untuk admin, container ini muncul di bawah tombol Mulai Inspeksi Baru.
         if (emptyState) emptyState.classList.add('hidden');
         container.classList.remove('hidden');
 
-        if (activeDrafts.length === 0) {
+        if (activeDrafts.length === 0 && pendingDrafts.length === 0) {
             container.innerHTML = `
 <div class="card-modern rounded-2xl shadow-lg p-8 text-center border border-blue-200 bg-gradient-to-br from-blue-50 to-cyan-50">
     <div class="w-14 h-14 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-600 flex items-center justify-center shadow-md">
@@ -1166,7 +1287,7 @@ async function renderDraftInspectionCards() {
             return;
         }
 
-        container.innerHTML = activeDrafts.map(draft => {
+        const activeHtml = activeDrafts.map(draft => {
             const clientName = draft.vehicleData?.customerName || '-';
             const vehicleName = draft.vehicleData?.vehicleType || '-';
             const startTime = draft.createdAt
@@ -1229,6 +1350,17 @@ async function renderDraftInspectionCards() {
 </div>
 `;
         }).join('');
+
+        const pendingHtml = pendingDrafts.length > 0
+            ? `
+<div class="mb-3 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+    <p class="text-sm font-black text-blue-800">Laporan pending sync</p>
+    <p class="text-xs font-semibold text-blue-700 mt-1">Ada submit yang sempat terputus. Data masih tersimpan lokal dan bisa dicoba sync ulang.</p>
+</div>
+${pendingDrafts.map(buildPendingSubmitInspectionCard).join('')}`
+            : '';
+
+        container.innerHTML = pendingHtml + activeHtml;
 
     } catch (err) {
         console.error('❌ Render draft cards gagal:', err);
