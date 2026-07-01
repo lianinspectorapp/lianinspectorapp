@@ -8616,6 +8616,259 @@ console.log('✅ inspection.js v119 multi damage selection loaded');
 
 
 // =============================================================
+// V126 - Emergency draft snapshot fallback
+// =============================================================
+// IndexedDB tetap menjadi penyimpanan utama. Snapshot kecil ini disimpan sinkron
+// ke localStorage agar data terakhir masih bisa dipulihkan jika app/HP mati tepat
+// ketika autosave IndexedDB belum selesai commit.
+(function installLianV126EmergencyDraftSnapshot() {
+    if (window.__LIAN_V126_EMERGENCY_DRAFT_SNAPSHOT_INSTALLED) return;
+    window.__LIAN_V126_EMERGENCY_DRAFT_SNAPSHOT_INSTALLED = true;
+
+    const TAG = '[v126 emergency draft]';
+    const KEY_PREFIX = 'lian_emergency_inspection_draft_';
+    const MAX_SNAPSHOT_CHARS = 2400000;
+
+    function getOwnerIdV126() {
+        return String(currentUser?.id || currentUser?.username || '').trim();
+    }
+
+    function getSnapshotKeyV126() {
+        const ownerId = getOwnerIdV126();
+        return ownerId ? KEY_PREFIX + ownerId : null;
+    }
+
+    function stripHeavyDraftValueV126(key, value) {
+        const blockedKeys = [
+            'blob',
+            'file',
+            'rawFile',
+            'base64',
+            'dataUrl',
+            'previewDataUrl',
+            'localBase64',
+            'localPreview',
+            'localDataUrl',
+            'objectUrl',
+            'thumbnailDataUrl',
+            'thumbDataUrl'
+        ];
+
+        if (blockedKeys.includes(key)) return undefined;
+        if (typeof Blob !== 'undefined' && value instanceof Blob) return undefined;
+        if (typeof File !== 'undefined' && value instanceof File) return undefined;
+
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (trimmed.startsWith('data:image/') || trimmed.startsWith('blob:')) return undefined;
+            if (trimmed.length > 20000 && /^[A-Za-z0-9+/=\r\n]+$/.test(trimmed.slice(0, 500))) return undefined;
+        }
+
+        return value;
+    }
+
+    function buildEmergencyDraftSnapshotV126(extra = {}) {
+        if (!currentUser) return null;
+
+        const ownerId = getOwnerIdV126();
+        if (!ownerId) return null;
+
+        const vehicleData = typeof getVehicleFormData === 'function'
+            ? { ...(inspectionFormData || {}), ...getVehicleFormData() }
+            : { ...(inspectionFormData || {}) };
+
+        const documentsData = typeof getDocumentFormData === 'function' ? getDocumentFormData() : {};
+        const accessoriesData = typeof getAccessoryFormData === 'function' ? getAccessoryFormData() : {};
+        const id = currentOfflineInspectionId || (typeof getActiveDraftId === 'function' ? getActiveDraftId() : null);
+        const now = new Date().toISOString();
+
+        return {
+            id,
+            ownerId,
+            inspectorId: ownerId,
+            inspectorName: currentUser.username || ownerId,
+            role: currentUser.role || 'inspector',
+            vehicleData,
+            itemsData: inspectionItemsData || {},
+            documentsData,
+            accessoriesData,
+            status: extra.status || 'draft',
+            syncStatus: extra.syncStatus || 'draft',
+            createdAt: extra.createdAt || now,
+            updatedAt: now,
+            appVersion: 126,
+            emergencySnapshot: true
+        };
+    }
+
+    function writeEmergencyDraftSnapshotV126(extra = {}) {
+        try {
+            const key = getSnapshotKeyV126();
+            const snapshot = buildEmergencyDraftSnapshotV126(extra);
+            if (!key || !snapshot || !hasInspectionDraftContent(snapshot)) return false;
+
+            const serialized = JSON.stringify(snapshot, stripHeavyDraftValueV126);
+            if (serialized.length > MAX_SNAPSHOT_CHARS) {
+                console.warn(TAG, 'snapshot terlalu besar, dilewati agar localStorage tidak penuh');
+                return false;
+            }
+
+            localStorage.setItem(key, serialized);
+            return true;
+        } catch (err) {
+            console.warn(TAG, 'gagal menulis snapshot darurat:', err?.message || err);
+            return false;
+        }
+    }
+
+    function readEmergencyDraftSnapshotV126() {
+        try {
+            const key = getSnapshotKeyV126();
+            if (!key) return null;
+
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+
+            const snapshot = JSON.parse(raw);
+            if (!snapshot || !hasInspectionDraftContent(snapshot)) return null;
+            if (typeof isDraftOwnedByCurrentUser === 'function' && !isDraftOwnedByCurrentUser(snapshot)) return null;
+
+            const status = snapshot.status || 'draft';
+            const syncStatus = snapshot.syncStatus || 'draft';
+            if (status !== 'draft' || syncStatus !== 'draft') return null;
+
+            return snapshot;
+        } catch (err) {
+            console.warn(TAG, 'gagal membaca snapshot darurat:', err?.message || err);
+            return null;
+        }
+    }
+
+    function clearEmergencyDraftSnapshotV126() {
+        try {
+            const key = getSnapshotKeyV126();
+            if (key) localStorage.removeItem(key);
+        } catch (_) {}
+    }
+
+    try {
+        const previousSaveCurrentInspectionDraft = typeof saveCurrentInspectionDraft === 'function'
+            ? saveCurrentInspectionDraft
+            : null;
+
+        if (previousSaveCurrentInspectionDraft) {
+            saveCurrentInspectionDraft = function saveCurrentInspectionDraftV126(extra = {}) {
+                writeEmergencyDraftSnapshotV126(extra || {});
+                const result = previousSaveCurrentInspectionDraft.apply(this, arguments);
+                window.__LIAN_LAST_DRAFT_SAVE_PROMISE = Promise.resolve(result).catch(err => {
+                    console.warn(TAG, 'autosave IndexedDB gagal:', err?.message || err);
+                    return null;
+                });
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch saveCurrentInspectionDraft dilewati:', err?.message || err);
+    }
+
+    try {
+        const previousRestoreOfflineDraft = typeof restoreOfflineDraft === 'function'
+            ? restoreOfflineDraft
+            : null;
+
+        if (previousRestoreOfflineDraft) {
+            restoreOfflineDraft = async function restoreOfflineDraftV126(options = {}) {
+                const restored = await previousRestoreOfflineDraft.apply(this, arguments);
+                if (restored) return true;
+
+                const snapshot = readEmergencyDraftSnapshotV126();
+                if (!snapshot) return false;
+
+                const id = snapshot.id || (typeof createOfflineInspectionId === 'function'
+                    ? createOfflineInspectionId()
+                    : `${snapshot.ownerId}_${Date.now()}`);
+
+                const recoveredDraft = {
+                    ...snapshot,
+                    id,
+                    recoveredFromEmergencySnapshot: true,
+                    updatedAt: new Date().toISOString()
+                };
+
+                currentOfflineInspectionId = id;
+
+                if (typeof saveInspectionOffline === 'function') {
+                    await saveInspectionOffline(recoveredDraft).catch(err => {
+                        console.warn(TAG, 'gagal menyalin snapshot ke IndexedDB:', err?.message || err);
+                    });
+                }
+
+                applyOfflineDraftToInspection(recoveredDraft, {
+                    showUi: options.showUi !== false,
+                    preferChecklist: Boolean(options.preferChecklist)
+                });
+
+                console.warn(TAG, 'draft dipulihkan dari snapshot darurat', id);
+                return true;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch restoreOfflineDraft dilewati:', err?.message || err);
+    }
+
+    try {
+        const previousCleanupAfterSuccessfulSubmit = typeof cleanupAfterSuccessfulSubmit === 'function'
+            ? cleanupAfterSuccessfulSubmit
+            : null;
+
+        if (previousCleanupAfterSuccessfulSubmit) {
+            cleanupAfterSuccessfulSubmit = async function cleanupAfterSuccessfulSubmitV126() {
+                const result = await previousCleanupAfterSuccessfulSubmit.apply(this, arguments);
+                clearEmergencyDraftSnapshotV126();
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch cleanupAfterSuccessfulSubmit dilewati:', err?.message || err);
+    }
+
+    try {
+        const previousResetInspectionRuntime = typeof resetInspectionRuntime === 'function'
+            ? resetInspectionRuntime
+            : null;
+
+        if (previousResetInspectionRuntime) {
+            resetInspectionRuntime = function resetInspectionRuntimeV126(options = {}) {
+                const shouldClearEmergencySnapshot = Boolean(options.deleteDraft);
+                const result = previousResetInspectionRuntime.apply(this, arguments);
+                if (shouldClearEmergencySnapshot) clearEmergencyDraftSnapshotV126();
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch resetInspectionRuntime dilewati:', err?.message || err);
+    }
+
+    window.addEventListener('pagehide', () => writeEmergencyDraftSnapshotV126());
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') writeEmergencyDraftSnapshotV126();
+    });
+
+    if (navigator.storage && typeof navigator.storage.persist === 'function') {
+        navigator.storage.persist().catch(() => {});
+    }
+
+    window.LianEmergencyDraftSnapshotV126 = {
+        save: writeEmergencyDraftSnapshotV126,
+        read: readEmergencyDraftSnapshotV126,
+        clear: clearEmergencyDraftSnapshotV126
+    };
+
+    console.log('✅ inspection.js v126 emergency draft snapshot loaded');
+})();
+
+
+// =============================================================
 // V125 - Inspector note + clearer live camera only
 // =============================================================
 // Catatan patch:
