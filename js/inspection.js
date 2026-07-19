@@ -8616,259 +8616,6 @@ console.log('✅ inspection.js v119 multi damage selection loaded');
 
 
 // =============================================================
-// V126 - Emergency draft snapshot fallback
-// =============================================================
-// IndexedDB tetap menjadi penyimpanan utama. Snapshot kecil ini disimpan sinkron
-// ke localStorage agar data terakhir masih bisa dipulihkan jika app/HP mati tepat
-// ketika autosave IndexedDB belum selesai commit.
-(function installLianV126EmergencyDraftSnapshot() {
-    if (window.__LIAN_V126_EMERGENCY_DRAFT_SNAPSHOT_INSTALLED) return;
-    window.__LIAN_V126_EMERGENCY_DRAFT_SNAPSHOT_INSTALLED = true;
-
-    const TAG = '[v126 emergency draft]';
-    const KEY_PREFIX = 'lian_emergency_inspection_draft_';
-    const MAX_SNAPSHOT_CHARS = 2400000;
-
-    function getOwnerIdV126() {
-        return String(currentUser?.id || currentUser?.username || '').trim();
-    }
-
-    function getSnapshotKeyV126() {
-        const ownerId = getOwnerIdV126();
-        return ownerId ? KEY_PREFIX + ownerId : null;
-    }
-
-    function stripHeavyDraftValueV126(key, value) {
-        const blockedKeys = [
-            'blob',
-            'file',
-            'rawFile',
-            'base64',
-            'dataUrl',
-            'previewDataUrl',
-            'localBase64',
-            'localPreview',
-            'localDataUrl',
-            'objectUrl',
-            'thumbnailDataUrl',
-            'thumbDataUrl'
-        ];
-
-        if (blockedKeys.includes(key)) return undefined;
-        if (typeof Blob !== 'undefined' && value instanceof Blob) return undefined;
-        if (typeof File !== 'undefined' && value instanceof File) return undefined;
-
-        if (typeof value === 'string') {
-            const trimmed = value.trim();
-            if (trimmed.startsWith('data:image/') || trimmed.startsWith('blob:')) return undefined;
-            if (trimmed.length > 20000 && /^[A-Za-z0-9+/=\r\n]+$/.test(trimmed.slice(0, 500))) return undefined;
-        }
-
-        return value;
-    }
-
-    function buildEmergencyDraftSnapshotV126(extra = {}) {
-        if (!currentUser) return null;
-
-        const ownerId = getOwnerIdV126();
-        if (!ownerId) return null;
-
-        const vehicleData = typeof getVehicleFormData === 'function'
-            ? { ...(inspectionFormData || {}), ...getVehicleFormData() }
-            : { ...(inspectionFormData || {}) };
-
-        const documentsData = typeof getDocumentFormData === 'function' ? getDocumentFormData() : {};
-        const accessoriesData = typeof getAccessoryFormData === 'function' ? getAccessoryFormData() : {};
-        const id = currentOfflineInspectionId || (typeof getActiveDraftId === 'function' ? getActiveDraftId() : null);
-        const now = new Date().toISOString();
-
-        return {
-            id,
-            ownerId,
-            inspectorId: ownerId,
-            inspectorName: currentUser.username || ownerId,
-            role: currentUser.role || 'inspector',
-            vehicleData,
-            itemsData: inspectionItemsData || {},
-            documentsData,
-            accessoriesData,
-            status: extra.status || 'draft',
-            syncStatus: extra.syncStatus || 'draft',
-            createdAt: extra.createdAt || now,
-            updatedAt: now,
-            appVersion: 126,
-            emergencySnapshot: true
-        };
-    }
-
-    function writeEmergencyDraftSnapshotV126(extra = {}) {
-        try {
-            const key = getSnapshotKeyV126();
-            const snapshot = buildEmergencyDraftSnapshotV126(extra);
-            if (!key || !snapshot || !hasInspectionDraftContent(snapshot)) return false;
-
-            const serialized = JSON.stringify(snapshot, stripHeavyDraftValueV126);
-            if (serialized.length > MAX_SNAPSHOT_CHARS) {
-                console.warn(TAG, 'snapshot terlalu besar, dilewati agar localStorage tidak penuh');
-                return false;
-            }
-
-            localStorage.setItem(key, serialized);
-            return true;
-        } catch (err) {
-            console.warn(TAG, 'gagal menulis snapshot darurat:', err?.message || err);
-            return false;
-        }
-    }
-
-    function readEmergencyDraftSnapshotV126() {
-        try {
-            const key = getSnapshotKeyV126();
-            if (!key) return null;
-
-            const raw = localStorage.getItem(key);
-            if (!raw) return null;
-
-            const snapshot = JSON.parse(raw);
-            if (!snapshot || !hasInspectionDraftContent(snapshot)) return null;
-            if (typeof isDraftOwnedByCurrentUser === 'function' && !isDraftOwnedByCurrentUser(snapshot)) return null;
-
-            const status = snapshot.status || 'draft';
-            const syncStatus = snapshot.syncStatus || 'draft';
-            if (status !== 'draft' || syncStatus !== 'draft') return null;
-
-            return snapshot;
-        } catch (err) {
-            console.warn(TAG, 'gagal membaca snapshot darurat:', err?.message || err);
-            return null;
-        }
-    }
-
-    function clearEmergencyDraftSnapshotV126() {
-        try {
-            const key = getSnapshotKeyV126();
-            if (key) localStorage.removeItem(key);
-        } catch (_) {}
-    }
-
-    try {
-        const previousSaveCurrentInspectionDraft = typeof saveCurrentInspectionDraft === 'function'
-            ? saveCurrentInspectionDraft
-            : null;
-
-        if (previousSaveCurrentInspectionDraft) {
-            saveCurrentInspectionDraft = function saveCurrentInspectionDraftV126(extra = {}) {
-                writeEmergencyDraftSnapshotV126(extra || {});
-                const result = previousSaveCurrentInspectionDraft.apply(this, arguments);
-                window.__LIAN_LAST_DRAFT_SAVE_PROMISE = Promise.resolve(result).catch(err => {
-                    console.warn(TAG, 'autosave IndexedDB gagal:', err?.message || err);
-                    return null;
-                });
-                return result;
-            };
-        }
-    } catch (err) {
-        console.warn(TAG, 'patch saveCurrentInspectionDraft dilewati:', err?.message || err);
-    }
-
-    try {
-        const previousRestoreOfflineDraft = typeof restoreOfflineDraft === 'function'
-            ? restoreOfflineDraft
-            : null;
-
-        if (previousRestoreOfflineDraft) {
-            restoreOfflineDraft = async function restoreOfflineDraftV126(options = {}) {
-                const restored = await previousRestoreOfflineDraft.apply(this, arguments);
-                if (restored) return true;
-
-                const snapshot = readEmergencyDraftSnapshotV126();
-                if (!snapshot) return false;
-
-                const id = snapshot.id || (typeof createOfflineInspectionId === 'function'
-                    ? createOfflineInspectionId()
-                    : `${snapshot.ownerId}_${Date.now()}`);
-
-                const recoveredDraft = {
-                    ...snapshot,
-                    id,
-                    recoveredFromEmergencySnapshot: true,
-                    updatedAt: new Date().toISOString()
-                };
-
-                currentOfflineInspectionId = id;
-
-                if (typeof saveInspectionOffline === 'function') {
-                    await saveInspectionOffline(recoveredDraft).catch(err => {
-                        console.warn(TAG, 'gagal menyalin snapshot ke IndexedDB:', err?.message || err);
-                    });
-                }
-
-                applyOfflineDraftToInspection(recoveredDraft, {
-                    showUi: options.showUi !== false,
-                    preferChecklist: Boolean(options.preferChecklist)
-                });
-
-                console.warn(TAG, 'draft dipulihkan dari snapshot darurat', id);
-                return true;
-            };
-        }
-    } catch (err) {
-        console.warn(TAG, 'patch restoreOfflineDraft dilewati:', err?.message || err);
-    }
-
-    try {
-        const previousCleanupAfterSuccessfulSubmit = typeof cleanupAfterSuccessfulSubmit === 'function'
-            ? cleanupAfterSuccessfulSubmit
-            : null;
-
-        if (previousCleanupAfterSuccessfulSubmit) {
-            cleanupAfterSuccessfulSubmit = async function cleanupAfterSuccessfulSubmitV126() {
-                const result = await previousCleanupAfterSuccessfulSubmit.apply(this, arguments);
-                clearEmergencyDraftSnapshotV126();
-                return result;
-            };
-        }
-    } catch (err) {
-        console.warn(TAG, 'patch cleanupAfterSuccessfulSubmit dilewati:', err?.message || err);
-    }
-
-    try {
-        const previousResetInspectionRuntime = typeof resetInspectionRuntime === 'function'
-            ? resetInspectionRuntime
-            : null;
-
-        if (previousResetInspectionRuntime) {
-            resetInspectionRuntime = function resetInspectionRuntimeV126(options = {}) {
-                const shouldClearEmergencySnapshot = Boolean(options.deleteDraft);
-                const result = previousResetInspectionRuntime.apply(this, arguments);
-                if (shouldClearEmergencySnapshot) clearEmergencyDraftSnapshotV126();
-                return result;
-            };
-        }
-    } catch (err) {
-        console.warn(TAG, 'patch resetInspectionRuntime dilewati:', err?.message || err);
-    }
-
-    window.addEventListener('pagehide', () => writeEmergencyDraftSnapshotV126());
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') writeEmergencyDraftSnapshotV126();
-    });
-
-    if (navigator.storage && typeof navigator.storage.persist === 'function') {
-        navigator.storage.persist().catch(() => {});
-    }
-
-    window.LianEmergencyDraftSnapshotV126 = {
-        save: writeEmergencyDraftSnapshotV126,
-        read: readEmergencyDraftSnapshotV126,
-        clear: clearEmergencyDraftSnapshotV126
-    };
-
-    console.log('✅ inspection.js v126 emergency draft snapshot loaded');
-})();
-
-
-// =============================================================
 // V125 - Inspector note + clearer live camera only
 // =============================================================
 // Catatan patch:
@@ -9163,4 +8910,737 @@ console.log('✅ inspection.js v119 multi damage selection loaded');
     };
 
     console.log('✅ inspection.js v125 inspector note + photo quality loaded');
+})();
+
+
+// =============================================================
+// V130 - Fast history/report search
+// =============================================================
+// Pencarian berjalan di memori agar input tidak kehilangan fokus/kursor.
+// Detail inspection_details dimuat lazy satu kali saat user mulai mencari.
+(function installLianV130HistorySearch() {
+    if (window.__LIAN_V130_HISTORY_SEARCH_INSTALLED) return;
+    window.__LIAN_V130_HISTORY_SEARCH_INSTALLED = true;
+
+    const TAG = '[v130-history-search]';
+    const DETAIL_PAGE_SIZE = 1000;
+    const MIN_QUERY_CHARS = 2;
+    const MIN_DETAIL_QUERY_CHARS = 3;
+    const SEARCH_DEBOUNCE_MS = 420;
+    const DETAIL_DEBOUNCE_MS = 1100;
+    const state = window.__LIAN_HISTORY_SEARCH_V130 || (window.__LIAN_HISTORY_SEARCH_V130 = {
+        query: '',
+        timer: null,
+        detailTimer: null,
+        detailsLoaded: false,
+        detailsUnavailable: false,
+        detailsLoading: null,
+        detailsByInspectionId: new Map(),
+        dateStart: '',
+        dateEnd: '',
+        calendarOpen: false,
+        calendarMonth: ''
+    });
+    state.dateStart = state.dateStart || '';
+    state.dateEnd = state.dateEnd || '';
+    state.calendarOpen = Boolean(state.calendarOpen);
+    state.calendarMonth = state.calendarMonth || '';
+
+    function escapeV130(value) {
+        if (typeof escapeHtml === 'function') return escapeHtml(value);
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function normalizeV130(value) {
+        return String(value ?? '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function digitsOnlyV130(value) {
+        return String(value ?? '').replace(/\D+/g, '');
+    }
+
+    function hasLettersAndDigitsV130(value) {
+        return /[a-z]/i.test(value) && /\d/.test(value);
+    }
+
+    function getInspectionIdV130(row = {}) {
+        return String(row.inspectionId || row.inspection_id || row.id || '').trim();
+    }
+
+    function getVisibleRowsV130() {
+        const rows = typeof getVisibleHistoryInspections === 'function'
+            ? getVisibleHistoryInspections()
+            : (allInspections || []);
+
+        return (rows || [])
+            .map(row => typeof normalizeInspectionForReport === 'function' ? normalizeInspectionForReport(row) : row)
+            .filter(row => row && getInspectionIdV130(row));
+    }
+
+    function padDatePartV130(value) {
+        return String(value).padStart(2, '0');
+    }
+
+    function dateKeyFromDateV130(date) {
+        if (!date || !Number.isFinite(date.getTime())) return '';
+        return `${date.getFullYear()}-${padDatePartV130(date.getMonth() + 1)}-${padDatePartV130(date.getDate())}`;
+    }
+
+    function parseDateKeyV130(key) {
+        const match = String(key || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!match) return null;
+        const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+        return Number.isFinite(date.getTime()) ? date : null;
+    }
+
+    function toLocalDateV130(value) {
+        if (!value) return null;
+        if (value instanceof Date) {
+            return Number.isFinite(value.getTime())
+                ? new Date(value.getFullYear(), value.getMonth(), value.getDate())
+                : null;
+        }
+
+        const raw = String(value).trim();
+        const isoMatch = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        if (isoMatch) {
+            return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+        }
+
+        const idMatch = raw.match(/^(\d{1,2})[\/\-. ](\d{1,2})[\/\-. ](\d{4})$/);
+        if (idMatch) {
+            return new Date(Number(idMatch[3]), Number(idMatch[2]) - 1, Number(idMatch[1]));
+        }
+
+        const parsed = new Date(raw);
+        return Number.isFinite(parsed.getTime())
+            ? new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+            : null;
+    }
+
+    function toDateKeyV130(value) {
+        return dateKeyFromDateV130(toLocalDateV130(value));
+    }
+
+    function monthKeyFromDateV130(date) {
+        if (!date || !Number.isFinite(date.getTime())) return monthKeyFromDateV130(new Date());
+        return `${date.getFullYear()}-${padDatePartV130(date.getMonth() + 1)}`;
+    }
+
+    function monthDateFromKeyV130(monthKey) {
+        const match = String(monthKey || '').match(/^(\d{4})-(\d{2})$/);
+        if (!match) return null;
+        return new Date(Number(match[1]), Number(match[2]) - 1, 1);
+    }
+
+    function addMonthsV130(monthKey, amount) {
+        const base = monthDateFromKeyV130(monthKey) || new Date();
+        base.setMonth(base.getMonth() + amount);
+        return monthKeyFromDateV130(base);
+    }
+
+    function ensureCalendarMonthV130() {
+        if (!state.calendarMonth) {
+            const base = parseDateKeyV130(state.dateStart) || parseDateKeyV130(state.dateEnd) || new Date();
+            state.calendarMonth = monthKeyFromDateV130(base);
+        }
+        return state.calendarMonth;
+    }
+
+    function formatDateLabelV130(key) {
+        const date = parseDateKeyV130(key);
+        if (!date) return '';
+        return date.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    function hasDateFilterV130() {
+        return Boolean(state.dateStart || state.dateEnd);
+    }
+
+    function getDateRangeBoundsV130() {
+        if (!state.dateStart && !state.dateEnd) return ['', ''];
+        const start = state.dateStart || state.dateEnd;
+        const end = state.dateEnd || state.dateStart;
+        return start <= end ? [start, end] : [end, start];
+    }
+
+    function getDateRangeLabelV130() {
+        if (!hasDateFilterV130()) return 'Semua tanggal';
+        const [start, end] = getDateRangeBoundsV130();
+        if (!start || start === end) return formatDateLabelV130(start);
+        return `${formatDateLabelV130(start)} - ${formatDateLabelV130(end)}`;
+    }
+
+    function getRowDateKeyV130(row = {}) {
+        return toDateKeyV130(row.inspectionDate || row.inspection_date || row.created_at || row.createdAt || row._inspectionDate);
+    }
+
+    function rowMatchesDateRangeV130(row = {}) {
+        if (!hasDateFilterV130()) return true;
+        const dateKey = getRowDateKeyV130(row);
+        if (!dateKey) return false;
+        const [start, end] = getDateRangeBoundsV130();
+        if (start && dateKey < start) return false;
+        if (end && dateKey > end) return false;
+        return true;
+    }
+
+    function buildDetailTextV130(inspectionId) {
+        const details = state.detailsByInspectionId.get(String(inspectionId || '')) || [];
+        return details.map(detail => [
+            detail.item_name,
+            detail.itemName,
+            detail.status,
+            detail.note
+        ].filter(Boolean).join(' ')).join(' ');
+    }
+
+    function buildRowSearchTextV130(row = {}) {
+        const id = getInspectionIdV130(row);
+        const score = row.value ?? row.score ?? row._value ?? '';
+        const statusWords = Number(score) >= 80
+            ? 'baik aman good'
+            : Number(score) >= 50
+                ? 'layak catatan sedang warning'
+                : 'perlu perbaikan rusak bad';
+
+        const baseParts = [
+            row.vehiclePlate,
+            row.vehicle_plate,
+            row.vehicleType,
+            row.vehicle_type,
+            row.vehicleYear,
+            row.vehicle_year,
+            row.vehicleColor,
+            row.vehicle_color,
+            row.vehicleTransmission,
+            row.vehicle_transmission,
+            row.vehicleFuel,
+            row.vehicle_fuel,
+            row.vehicleMileage,
+            row.vehicle_mileage,
+            row.customerName,
+            row.customer_name,
+            row.customerPhone,
+            row.customer_phone,
+            row.inspectorUsername,
+            row.inspector,
+            row.inspectorName,
+            row.inspector_note,
+            row.inspectorNote,
+            score,
+            row.status,
+            statusWords,
+            buildDetailTextV130(id)
+        ];
+
+        return baseParts.filter(value => value !== null && value !== undefined && value !== '').join(' ');
+    }
+
+    function rowMatchesQueryV130(row, query) {
+        const cleanQuery = normalizeV130(query);
+        if (!cleanQuery) return true;
+
+        const haystack = normalizeV130(buildRowSearchTextV130(row));
+        const compactHaystack = haystack.replace(/[\s\-./]+/g, '');
+        const digitHaystack = digitsOnlyV130(haystack);
+        const compactQuery = cleanQuery.replace(/[\s\-./]+/g, '');
+        const digitQuery = digitsOnlyV130(cleanQuery);
+        const mixedPlateLikeQuery = hasLettersAndDigitsV130(cleanQuery);
+
+        if (mixedPlateLikeQuery) {
+            return Boolean(compactQuery && compactHaystack.includes(compactQuery));
+        }
+
+        if (compactQuery && compactHaystack.includes(compactQuery)) return true;
+        if (!/[a-z]/i.test(cleanQuery) && digitQuery && digitQuery.length >= 3 && digitHaystack.includes(digitQuery)) return true;
+
+        return cleanQuery.split(/\s+/).filter(Boolean).every(token => {
+            const tokenDigits = digitsOnlyV130(token);
+            return haystack.includes(token) ||
+                compactHaystack.includes(token.replace(/[\s\-./]+/g, '')) ||
+                (tokenDigits && digitHaystack.includes(tokenDigits));
+        });
+    }
+
+    function setHistorySearchStatusV130(text, tone = 'muted') {
+        const status = document.getElementById('historySearchStatusV130');
+        if (!status) return;
+
+        status.textContent = text || '';
+        status.className = 'text-[11px] font-black leading-tight ' + (
+            tone === 'loading' ? 'text-blue-700' :
+            tone === 'empty' ? 'text-amber-700' :
+            'text-slate-500'
+        );
+    }
+
+    function ensureHistorySearchStatusUiV130(list) {
+        if (!list?.parentNode) return null;
+
+        let statusWrap = document.getElementById('historySearchStatusWrapV130');
+        if (statusWrap) return statusWrap;
+
+        statusWrap = document.createElement('div');
+        statusWrap.id = 'historySearchStatusWrapV130';
+        statusWrap.className = 'mt-2 mb-4 text-center';
+        statusWrap.innerHTML = `
+            <div id="historySearchStatusV130" class="text-[11px] font-black leading-tight text-slate-500">Semua laporan ditampilkan</div>
+        `;
+        list.parentNode.insertBefore(statusWrap, list);
+        return statusWrap;
+    }
+
+    function showHistorySearchEmptyV130(list, title, subtitle) {
+        if (!list) return;
+
+        const empty = document.createElement('div');
+        empty.dataset.historySearchEmptyV130 = 'true';
+        empty.className = 'col-span-full rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center';
+        empty.innerHTML = `
+            <div class="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-white border border-amber-100 text-amber-700">
+                <i data-lucide="search-x" style="width:21px;height:21px;"></i>
+            </div>
+            <p class="text-sm font-black text-amber-800">${escapeV130(title || 'Tidak ada laporan yang cocok')}</p>
+            <p class="text-xs font-bold text-amber-700 mt-1">${escapeV130(subtitle || 'Coba kata kunci lain atau ubah filter tanggal.')}</p>
+        `;
+        list.appendChild(empty);
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    function renderDateCalendarV130() {
+        const label = document.getElementById('historyDateRangeLabelV130');
+        const clearBtn = document.getElementById('historyDateClearV130');
+        const calendar = document.getElementById('historyDateCalendarV130');
+        const dateBtn = document.getElementById('historyDateRangeBtnV130');
+        const hasFilter = hasDateFilterV130();
+
+        if (label) label.textContent = getDateRangeLabelV130();
+        if (clearBtn) {
+            clearBtn.classList.toggle('hidden', !hasFilter);
+            clearBtn.classList.toggle('flex', hasFilter);
+        }
+        if (dateBtn) {
+            dateBtn.classList.toggle('border-blue-400', hasFilter || state.calendarOpen);
+            dateBtn.classList.toggle('ring-4', state.calendarOpen);
+            dateBtn.classList.toggle('ring-blue-100', state.calendarOpen);
+        }
+        if (!calendar) return;
+
+        calendar.classList.toggle('hidden', !state.calendarOpen);
+        if (!state.calendarOpen) return;
+
+        const monthDate = monthDateFromKeyV130(ensureCalendarMonthV130()) || new Date();
+        const year = monthDate.getFullYear();
+        const month = monthDate.getMonth();
+        const monthTitle = monthDate.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+        const firstDayOffset = (new Date(year, month, 1).getDay() + 6) % 7;
+        const gridStart = new Date(year, month, 1 - firstDayOffset);
+        const todayKey = dateKeyFromDateV130(new Date());
+        const [rangeStart, rangeEnd] = getDateRangeBoundsV130();
+        const weekdays = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+        const guideText = !state.dateStart || state.dateEnd
+            ? 'Pilih tanggal awal'
+            : 'Pilih tanggal akhir';
+
+        const cells = Array.from({ length: 42 }, (_, index) => {
+            const date = new Date(gridStart);
+            date.setDate(gridStart.getDate() + index);
+            const key = dateKeyFromDateV130(date);
+            const inMonth = date.getMonth() === month;
+            const isStart = Boolean(state.dateStart && key === state.dateStart);
+            const isEnd = Boolean(state.dateEnd && key === state.dateEnd);
+            const isSelected = isStart || isEnd;
+            const inRange = Boolean(rangeStart && rangeEnd && key > rangeStart && key < rangeEnd);
+            const isToday = key === todayKey;
+            const className = [
+                'h-9 w-9 rounded-lg text-xs font-black transition-all',
+                'focus:outline-none focus:ring-2 focus:ring-blue-300',
+                inMonth ? 'text-slate-700 hover:bg-blue-50' : 'text-slate-300 hover:bg-slate-50',
+                inRange ? 'bg-blue-100 text-blue-800' : '',
+                isToday && !isSelected ? 'ring-2 ring-blue-200' : '',
+                isSelected ? 'bg-blue-600 text-white shadow-sm hover:bg-blue-700' : ''
+            ].filter(Boolean).join(' ');
+
+            return `
+                <button type="button" data-date-key-v130="${key}" class="${className}" aria-label="${escapeV130(formatDateLabelV130(key))}">
+                    ${date.getDate()}
+                </button>
+            `;
+        }).join('');
+
+        calendar.innerHTML = `
+            <div class="flex items-center justify-between gap-3">
+                <button id="historyDatePrevV130" type="button" class="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all" title="Bulan sebelumnya">
+                    <i data-lucide="chevron-left" style="width:17px;height:17px;"></i>
+                </button>
+                <div class="min-w-0 text-center">
+                    <div class="text-sm font-black text-slate-800">${escapeV130(monthTitle)}</div>
+                    <div class="text-[11px] font-bold text-slate-500">${escapeV130(guideText)}</div>
+                </div>
+                <button id="historyDateNextV130" type="button" class="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all" title="Bulan berikutnya">
+                    <i data-lucide="chevron-right" style="width:17px;height:17px;"></i>
+                </button>
+            </div>
+            <div class="mt-3 grid grid-cols-7 gap-1 text-center text-[10px] font-black uppercase text-slate-400">
+                ${weekdays.map(day => `<div>${day}</div>`).join('')}
+            </div>
+            <div class="mt-2 grid grid-cols-7 gap-1">
+                ${cells}
+            </div>
+            <div class="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                <div class="text-[11px] font-bold text-slate-500 truncate">${escapeV130(getDateRangeLabelV130())}</div>
+                <button id="historyDateTodayV130" type="button" class="h-8 rounded-lg bg-blue-50 px-3 text-xs font-black text-blue-700 hover:bg-blue-100 transition-all">Hari ini</button>
+            </div>
+        `;
+
+        calendar.querySelector('#historyDatePrevV130')?.addEventListener('click', () => {
+            state.calendarMonth = addMonthsV130(ensureCalendarMonthV130(), -1);
+            renderDateCalendarV130();
+        });
+        calendar.querySelector('#historyDateNextV130')?.addEventListener('click', () => {
+            state.calendarMonth = addMonthsV130(ensureCalendarMonthV130(), 1);
+            renderDateCalendarV130();
+        });
+        calendar.querySelector('#historyDateTodayV130')?.addEventListener('click', () => {
+            const today = new Date();
+            state.calendarMonth = monthKeyFromDateV130(today);
+            selectHistoryDateV130(dateKeyFromDateV130(today));
+        });
+        calendar.querySelectorAll('[data-date-key-v130]').forEach(button => {
+            button.addEventListener('click', () => selectHistoryDateV130(button.dataset.dateKeyV130));
+        });
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    function selectHistoryDateV130(dateKey) {
+        if (!dateKey) return;
+
+        if (!state.dateStart || state.dateEnd) {
+            state.dateStart = dateKey;
+            state.dateEnd = '';
+            state.calendarOpen = true;
+        } else if (dateKey < state.dateStart) {
+            state.dateEnd = state.dateStart;
+            state.dateStart = dateKey;
+            state.calendarOpen = false;
+        } else {
+            state.dateEnd = dateKey;
+            state.calendarOpen = false;
+        }
+
+        state.calendarMonth = monthKeyFromDateV130(parseDateKeyV130(dateKey) || new Date());
+        renderDateCalendarV130();
+        applyHistorySearchFilterV130();
+    }
+
+    function clearHistoryDateRangeV130() {
+        state.dateStart = '';
+        state.dateEnd = '';
+        state.calendarOpen = false;
+        state.calendarMonth = monthKeyFromDateV130(new Date());
+        renderDateCalendarV130();
+        applyHistorySearchFilterV130();
+    }
+
+    function ensureHistorySearchUiV130() {
+        const historyView = document.getElementById('historyView');
+        const list = document.getElementById('inspectionHistoryList');
+        if (!historyView || !list) return null;
+
+        let panel = document.getElementById('historySearchPanelV130');
+        if (panel) {
+            ensureHistorySearchStatusUiV130(list);
+            return panel;
+        }
+
+        panel = document.createElement('div');
+        panel.id = 'historySearchPanelV130';
+        panel.className = 'rounded-2xl border border-blue-100 bg-gradient-to-r from-white via-blue-50 to-cyan-50 shadow-sm p-3 md:p-4';
+        panel.innerHTML = `
+            <div class="flex flex-row items-center gap-2 md:gap-3">
+                <div class="relative flex-1 min-w-0">
+                    <i data-lucide="search" style="width:18px;height:18px;" class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-700"></i>
+                    <input id="historySearchInputV130" type="text" autocomplete="off" spellcheck="false"
+                        class="w-full h-12 pl-10 pr-11 rounded-xl border-2 border-blue-100 bg-white/95 text-sm font-bold text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all"
+                        placeholder="Cari HP, BL/no polisi, tipe, nama, detail...">
+                    <button id="historySearchClearV130" type="button" class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 items-center justify-center transition-all" title="Bersihkan pencarian">
+                        <i data-lucide="x" style="width:16px;height:16px;"></i>
+                    </button>
+                </div>
+                <div class="relative w-[205px] shrink-0 md:w-[280px]">
+                    <button id="historyDateRangeBtnV130" type="button" class="flex h-12 w-full items-center justify-between gap-2 rounded-xl border-2 border-blue-100 bg-white/95 px-3 pr-14 text-left text-sm font-black text-slate-700 outline-none transition-all hover:border-blue-300">
+                        <span class="flex min-w-0 items-center gap-2">
+                            <i data-lucide="calendar-days" style="width:17px;height:17px;" class="shrink-0 text-blue-700"></i>
+                            <span id="historyDateRangeLabelV130" class="truncate">Semua tanggal</span>
+                        </span>
+                        <i data-lucide="chevron-down" style="width:16px;height:16px;" class="absolute right-3 top-1/2 -translate-y-1/2 shrink-0 text-slate-500"></i>
+                    </button>
+                    <button id="historyDateClearV130" type="button" class="hidden absolute right-8 top-1/2 -translate-y-1/2 h-7 w-7 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 items-center justify-center transition-all" title="Reset tanggal">
+                        <i data-lucide="x" style="width:14px;height:14px;"></i>
+                    </button>
+                    <div id="historyDateCalendarV130" class="hidden absolute right-0 top-full z-50 mt-2 w-[320px] max-w-[86vw] rounded-2xl border border-blue-100 bg-white p-3 shadow-xl"></div>
+                </div>
+            </div>
+        `;
+
+        list.parentNode.insertBefore(panel, list);
+        ensureHistorySearchStatusUiV130(list);
+
+        const input = panel.querySelector('#historySearchInputV130');
+        const clearBtn = panel.querySelector('#historySearchClearV130');
+        const dateBtn = panel.querySelector('#historyDateRangeBtnV130');
+        const dateClearBtn = panel.querySelector('#historyDateClearV130');
+        const dateCalendar = panel.querySelector('#historyDateCalendarV130');
+
+        input.value = state.query || '';
+        clearBtn.classList.toggle('hidden', !input.value);
+        clearBtn.classList.toggle('flex', Boolean(input.value));
+
+        input.addEventListener('input', () => {
+            state.query = input.value || '';
+            clearBtn.classList.toggle('hidden', !state.query);
+            clearBtn.classList.toggle('flex', Boolean(state.query));
+
+            if (state.timer) clearTimeout(state.timer);
+            state.timer = setTimeout(() => {
+                state.timer = null;
+                applyHistorySearchFilterV130();
+            }, SEARCH_DEBOUNCE_MS);
+        });
+
+        clearBtn.addEventListener('click', () => {
+            input.value = '';
+            state.query = '';
+            clearBtn.classList.add('hidden');
+            clearBtn.classList.remove('flex');
+            input.focus();
+            applyHistorySearchFilterV130();
+        });
+
+        dateBtn?.addEventListener('click', () => {
+            state.calendarOpen = !state.calendarOpen;
+            if (state.calendarOpen) ensureCalendarMonthV130();
+            renderDateCalendarV130();
+        });
+
+        dateClearBtn?.addEventListener('click', clearHistoryDateRangeV130);
+        dateCalendar?.addEventListener('click', event => event.stopPropagation());
+        renderDateCalendarV130();
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+        return panel;
+    }
+
+    function rebuildDetailMapV130(rows = []) {
+        state.detailsByInspectionId = new Map();
+        rows.forEach(detail => {
+            const id = String(detail.inspection_id || detail.inspectionId || '').trim();
+            if (!id) return;
+            if (!state.detailsByInspectionId.has(id)) state.detailsByInspectionId.set(id, []);
+            state.detailsByInspectionId.get(id).push(detail);
+        });
+    }
+
+    async function ensureHistorySearchDetailsLoadedV130() {
+        if (state.detailsLoaded) return true;
+        if (state.detailsLoading) return state.detailsLoading;
+
+        state.detailsLoading = (async () => {
+            try {
+                if (Array.isArray(sheetInspectionDetails) && sheetInspectionDetails.length > 0) {
+                    rebuildDetailMapV130(sheetInspectionDetails);
+                    state.detailsLoaded = true;
+                    state.detailsUnavailable = false;
+                    return true;
+                }
+
+                if (typeof supabaseClient === 'undefined' || !supabaseClient) return false;
+
+                const rows = [];
+                for (let from = 0; ; from += DETAIL_PAGE_SIZE) {
+                    const to = from + DETAIL_PAGE_SIZE - 1;
+                    const { data, error } = await supabaseClient
+                        .from('inspection_details')
+                        .select('inspection_id,item_name,status,note,created_at')
+                        .range(from, to);
+
+                    if (error) throw error;
+                    rows.push(...(data || []));
+                    if (!data || data.length < DETAIL_PAGE_SIZE) break;
+                }
+
+                sheetInspectionDetails = rows;
+                rebuildDetailMapV130(rows);
+                state.detailsLoaded = true;
+                state.detailsUnavailable = false;
+                return true;
+            } catch (err) {
+                console.warn(TAG, 'gagal memuat detail pencarian:', err?.message || err);
+                state.detailsUnavailable = true;
+                return false;
+            } finally {
+                state.detailsLoading = null;
+            }
+        })();
+
+        return state.detailsLoading;
+    }
+
+    document.addEventListener('click', event => {
+        if (!state.calendarOpen) return;
+        const panel = document.getElementById('historySearchPanelV130');
+        if (panel && panel.contains(event.target)) return;
+        state.calendarOpen = false;
+        renderDateCalendarV130();
+    });
+
+    function applyHistorySearchFilterV130() {
+        const panel = ensureHistorySearchUiV130();
+        const list = document.getElementById('inspectionHistoryList');
+        if (!panel || !list) return;
+
+        list.querySelector('[data-history-search-empty-v130="true"]')?.remove();
+
+        const rawQuery = state.query || '';
+        const normalizedQuery = normalizeV130(rawQuery);
+        const isSearchActive = normalizedQuery.length >= MIN_QUERY_CHARS;
+        const query = isSearchActive ? rawQuery : '';
+        const hasDateFilter = hasDateFilterV130();
+        const input = document.getElementById('historySearchInputV130');
+        const clearBtn = document.getElementById('historySearchClearV130');
+        if (input && input.value !== rawQuery) input.value = rawQuery;
+        if (clearBtn) {
+            clearBtn.classList.toggle('hidden', !rawQuery);
+            clearBtn.classList.toggle('flex', Boolean(rawQuery));
+        }
+        renderDateCalendarV130();
+
+        const cards = Array.from(list.querySelectorAll('[data-history-inspection-id]'));
+        const rowsById = new Map(getVisibleRowsV130().map(row => [getInspectionIdV130(row), row]));
+
+        let visibleCount = 0;
+        cards.forEach(card => {
+            const id = String(card.dataset.historyInspectionId || '').trim();
+            const row = rowsById.get(id);
+            const matches = row
+                ? (!query || rowMatchesQueryV130(row, query)) && (!hasDateFilter || rowMatchesDateRangeV130(row))
+                : (!query && !hasDateFilter);
+            card.classList.toggle('hidden', !matches);
+            if (matches) visibleCount += 1;
+        });
+
+        const total = cards.length;
+        if (!isSearchActive && state.detailTimer) {
+            clearTimeout(state.detailTimer);
+            state.detailTimer = null;
+        }
+
+        if (!rawQuery && !hasDateFilter) {
+            setHistorySearchStatusV130(total ? `${total} laporan ditampilkan` : 'Belum ada laporan', 'muted');
+            return;
+        }
+
+        if (!isSearchActive) {
+            if (hasDateFilter) {
+                if (visibleCount === 0) {
+                    setHistorySearchStatusV130('Tidak ada laporan di tanggal terpilih', 'empty');
+                    showHistorySearchEmptyV130(
+                        list,
+                        'Tidak ada laporan di rentang tanggal ini',
+                        'Ubah rentang tanggal atau reset tanggal.'
+                    );
+                } else {
+                    setHistorySearchStatusV130(
+                        rawQuery
+                            ? `${visibleCount} dari ${total} laporan pada tanggal terpilih; keyword mulai ${MIN_QUERY_CHARS} karakter`
+                            : `${visibleCount} dari ${total} laporan pada tanggal terpilih`,
+                        'muted'
+                    );
+                }
+                return;
+            }
+            setHistorySearchStatusV130(`Ketik minimal ${MIN_QUERY_CHARS} karakter untuk mencari`, 'muted');
+            return;
+        }
+
+        if (!state.detailsLoaded && !state.detailsLoading && !state.detailsUnavailable && normalizedQuery.length >= MIN_DETAIL_QUERY_CHARS) {
+            setHistorySearchStatusV130(`${visibleCount} hasil dari data utama`, 'muted');
+            if (state.detailTimer) clearTimeout(state.detailTimer);
+            state.detailTimer = setTimeout(() => {
+                state.detailTimer = null;
+                if (!state.query || state.detailsLoaded || state.detailsLoading || state.detailsUnavailable) return;
+                setHistorySearchStatusV130(`${visibleCount} hasil sementara, memuat detail...`, 'loading');
+                ensureHistorySearchDetailsLoadedV130().then(() => {
+                    if (normalizeV130(state.query || '').length >= MIN_QUERY_CHARS || hasDateFilterV130()) {
+                        applyHistorySearchFilterV130();
+                    }
+                });
+            }, DETAIL_DEBOUNCE_MS);
+        } else if (state.detailsLoading) {
+            setHistorySearchStatusV130(`${visibleCount} hasil sementara, memuat detail...`, 'loading');
+        } else if (visibleCount === 0) {
+            setHistorySearchStatusV130(
+                state.detailsUnavailable ? 'Tidak ada hasil dari data utama' : 'Tidak ada laporan yang cocok',
+                'empty'
+            );
+            showHistorySearchEmptyV130(
+                list,
+                'Tidak ada laporan yang cocok',
+                hasDateFilter
+                    ? 'Coba kata kunci lain atau ubah filter tanggal.'
+                    : 'Coba kata kunci lain atau hapus sebagian pencarian.'
+            );
+        } else if (state.detailsUnavailable) {
+            setHistorySearchStatusV130(`${visibleCount} hasil dari data utama`, 'muted');
+        } else {
+            setHistorySearchStatusV130(`${visibleCount} dari ${total} laporan cocok`, 'muted');
+        }
+    }
+
+    try {
+        const previousRenderInspectionHistory = typeof renderInspectionHistory === 'function'
+            ? renderInspectionHistory
+            : null;
+
+        if (previousRenderInspectionHistory) {
+            renderInspectionHistory = function renderInspectionHistoryV130() {
+                ensureHistorySearchUiV130();
+                const result = previousRenderInspectionHistory.apply(this, arguments);
+                applyHistorySearchFilterV130();
+                return result;
+            };
+        }
+    } catch (err) {
+        console.warn(TAG, 'patch renderInspectionHistory gagal:', err?.message || err);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        ensureHistorySearchUiV130();
+        if (!document.getElementById('historyView')?.classList.contains('hidden')) {
+            applyHistorySearchFilterV130();
+        }
+    });
+
+    window.LianHistorySearchV130 = {
+        render: applyHistorySearchFilterV130,
+        loadDetails: ensureHistorySearchDetailsLoadedV130,
+        get query() { return state.query; },
+        set query(value) {
+            state.query = String(value || '');
+            applyHistorySearchFilterV130();
+        }
+    };
+
+    console.log('✅ inspection.js v130 history search loaded');
 })();
