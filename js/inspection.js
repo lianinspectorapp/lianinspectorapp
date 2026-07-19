@@ -9075,9 +9075,20 @@ console.log('✅ inspection.js v119 multi damage selection loaded');
     }
 
     function getDateRangeLabelV130() {
-        if (!hasDateFilterV130()) return 'Semua tanggal';
+        if (!hasDateFilterV130()) return 'Tanggal';
         const [start, end] = getDateRangeBoundsV130();
         if (!start || start === end) return formatDateLabelV130(start);
+
+        const startDate = parseDateKeyV130(start);
+        const endDate = parseDateKeyV130(end);
+        if (startDate && endDate && startDate.getFullYear() === endDate.getFullYear()) {
+            if (startDate.getMonth() === endDate.getMonth()) {
+                const month = startDate.toLocaleDateString('id-ID', { month: 'short' });
+                return `${startDate.getDate()}-${endDate.getDate()} ${month} ${endDate.getFullYear()}`;
+            }
+            return `${startDate.getDate()} ${startDate.toLocaleDateString('id-ID', { month: 'short' })} - ${endDate.getDate()} ${endDate.toLocaleDateString('id-ID', { month: 'short', year: 'numeric' })}`;
+        }
+
         return `${formatDateLabelV130(start)} - ${formatDateLabelV130(end)}`;
     }
 
@@ -9368,21 +9379,21 @@ console.log('✅ inspection.js v119 multi damage selection loaded');
         panel.id = 'historySearchPanelV130';
         panel.className = 'rounded-2xl border border-blue-100 bg-gradient-to-r from-white via-blue-50 to-cyan-50 shadow-sm p-3 md:p-4';
         panel.innerHTML = `
-            <div class="flex flex-row items-center gap-2 md:gap-3">
+            <div class="grid grid-cols-[minmax(0,2fr)_minmax(120px,1fr)] items-center gap-2 md:gap-3">
                 <div class="relative flex-1 min-w-0">
                     <i data-lucide="search" style="width:18px;height:18px;" class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-700"></i>
                     <input id="historySearchInputV130" type="text" autocomplete="off" spellcheck="false"
-                        class="w-full h-12 pl-10 pr-11 rounded-xl border-2 border-blue-100 bg-white/95 text-sm font-bold text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all"
+                        class="w-full h-12 pl-10 pr-11 rounded-xl border-2 border-blue-100 bg-white/95 text-sm font-medium text-slate-800 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all"
                         placeholder="Cari HP, BL/no polisi, tipe, nama, detail...">
                     <button id="historySearchClearV130" type="button" class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 items-center justify-center transition-all" title="Bersihkan pencarian">
                         <i data-lucide="x" style="width:16px;height:16px;"></i>
                     </button>
                 </div>
-                <div class="relative w-[205px] shrink-0 md:w-[280px]">
-                    <button id="historyDateRangeBtnV130" type="button" class="flex h-12 w-full items-center justify-between gap-2 rounded-xl border-2 border-blue-100 bg-white/95 px-3 pr-14 text-left text-sm font-black text-slate-700 outline-none transition-all hover:border-blue-300">
+                <div class="relative min-w-0">
+                    <button id="historyDateRangeBtnV130" type="button" class="flex h-12 w-full items-center justify-between gap-2 rounded-xl border-2 border-blue-100 bg-white/95 px-3 pr-14 text-left text-sm font-medium text-slate-700 outline-none transition-all hover:border-blue-300">
                         <span class="flex min-w-0 items-center gap-2">
                             <i data-lucide="calendar-days" style="width:17px;height:17px;" class="shrink-0 text-blue-700"></i>
-                            <span id="historyDateRangeLabelV130" class="truncate">Semua tanggal</span>
+                            <span id="historyDateRangeLabelV130" class="truncate font-normal">Tanggal</span>
                         </span>
                         <i data-lucide="chevron-down" style="width:16px;height:16px;" class="absolute right-3 top-1/2 -translate-y-1/2 shrink-0 text-slate-500"></i>
                     </button>
