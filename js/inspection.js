@@ -2490,16 +2490,45 @@ async function restoreOfflineDraft(options = {}) {
             return finalDataUrl;
         }
 
+        async function fetchReportPhotoThumbnailDataUrl(fileId) {
+            if (!fileId) throw new Error('fileId kosong');
+            if (typeof GAS_UPLOAD_URL === 'undefined' || !GAS_UPLOAD_URL) {
+                throw new Error('GAS_UPLOAD_URL belum tersedia');
+            }
+
+            const separator = GAS_UPLOAD_URL.includes('?') ? '&' : '?';
+            const thumbnailProxyUrl = `${GAS_UPLOAD_URL}${separator}action=getThumbnail&fileId=${encodeURIComponent(fileId)}`;
+            const response = await fetchReportPhotoRequestWithRetry(
+                thumbnailProxyUrl,
+                { method: 'GET' },
+                15000,
+                2
+            );
+            const text = await response.text();
+            let result = null;
+            try {
+                result = JSON.parse(text);
+            } catch (_) {
+                throw new Error('Response thumbnail GAS bukan JSON valid');
+            }
+
+            if (!result.success || !String(result.dataUrl || '').startsWith('data:image/')) {
+                throw new Error(result.error || 'GAS tidak mengembalikan thumbnail data URL');
+            }
+            return result.dataUrl;
+        }
+
         // Dipakai oleh renderer PDF agar foto Drive tidak masuk sebagai URL
         // lintas-domain yang bisa gagal ditangkap karena batasan CORS.
         window.__LIAN_REPORT_PHOTO_FETCHER_V1 = fetchReportPhotoDataUrl;
+        window.__LIAN_REPORT_PHOTO_THUMBNAIL_FETCHER_V1 = fetchReportPhotoThumbnailDataUrl;
         window.__LIAN_REPORT_PHOTO_FAST_FETCHER_V1 = fileId => fetchReportPhotoDataUrl(fileId, {
             timeoutMs: 8000,
             maxAttempts: 1
         });
 
         const REPORT_PHOTO_BATCH_SIZE = 6;
-        const REPORT_PHOTO_BATCH_CONCURRENCY = 2;
+        const REPORT_PHOTO_BATCH_CONCURRENCY = 1;
 
         function chunkArray(items = [], size = 6) {
             const chunks = [];
@@ -2560,8 +2589,9 @@ async function restoreOfflineDraft(options = {}) {
         // meminta puluhan foto satu per satu ketika cache preview belum terisi.
         window.__LIAN_REPORT_PHOTO_BATCH_FETCHER_V1 = fetchReportPhotoBatchDataUrls;
 
-        async function hydrateSingleReportPhoto(img) {
+        async function hydrateSingleReportPhoto(img, options = {}) {
             const fileId = img.dataset.reportDriveFileId;
+            const keepThumbnail = options.keepThumbnail === true;
             const loading = img.parentElement?.querySelector('[data-photo-loading="true"]');
             const fallback = img.parentElement?.querySelector('[data-photo-fallback="true"]');
             const fallbackSrc = img.dataset.reportFallbackSrc || '';
@@ -2574,7 +2604,7 @@ async function restoreOfflineDraft(options = {}) {
 
             try {
                 const dataUrl = await fetchReportPhotoDataUrl(fileId);
-                img.src = dataUrl;
+                if (!keepThumbnail) img.src = dataUrl;
                 img.style.display = 'block';
                 img.dataset.reportDataLoaded = 'true';
                 img.removeAttribute('data-report-photo-failed');
@@ -2654,12 +2684,9 @@ async function restoreOfflineDraft(options = {}) {
             images.forEach(bindReportPhotoThumbnailFallback);
             try { window.LianReportPdf?.refreshPhotoReadiness?.(); } catch (_) {}
 
-            // Thumbnail dipakai langsung untuk preview. Pengambilan data foto
-            // penuh ditunda sampai export PDF agar halaman laporan tidak
-            // menunggu puluhan download GAS yang tidak diperlukan untuk preview.
-            const imagesWithoutSource = images.filter(img => {
-                return !String(img.getAttribute('src') || img.src || '').trim();
-            });
+            // Thumbnail langsung dipakai untuk tampilan. Data foto penuh tetap
+            // dipanaskan di cache secara background agar export tidak memulai
+            // 24 request berat sekaligus ketika tombol PDF ditekan.
             images.forEach(img => {
                 const source = String(img.getAttribute('src') || img.src || '').trim();
                 if (!source) return;
@@ -2671,13 +2698,15 @@ async function restoreOfflineDraft(options = {}) {
                 card?.setAttribute('data-photo-ready', 'thumbnail');
             });
 
-            if (imagesWithoutSource.length > 0) {
-                await runWithConcurrency(imagesWithoutSource, 4, hydrateSingleReportPhoto);
+            if (images.length > 0) {
+                await runWithConcurrency(images, 4, img => hydrateSingleReportPhoto(img, {
+                    keepThumbnail: true
+                }));
             }
             bindReportPhotoPreviewEvents();
             bindReportPhotoRetryEvents();
             try { window.LianReportPdf?.refreshPhotoReadiness?.(); } catch (_) {}
-            console.log(`✅ Thumbnail foto laporan tampil tanpa menunggu data penuh: ${images.length} foto`);
+            console.log(`✅ Thumbnail tampil; cache foto penuh dipanaskan di background: ${images.length} foto`);
         }
 
         function readFileAsDataUrl(file) {
@@ -7852,8 +7881,8 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 (function () {
     const TAG = '[pdf connector v69]';
     const PDF_SCRIPT_ID = 'lian-report-pdf-v69-script';
-    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-11';
-    const EXPECTED_PDF_VERSION = 'v111-clear-photo-retry-export-pdf';
+    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-16';
+    const EXPECTED_PDF_VERSION = 'v112-preview-only-export-pdf';
 
     function loadReportPdfModuleV69() {
         return new Promise((resolve, reject) => {

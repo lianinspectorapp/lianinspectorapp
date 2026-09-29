@@ -10,7 +10,7 @@
 (function () {
     'use strict';
 
-    const TAG = '[report-pdf v111-clear-photo-retry]';
+    const TAG = '[report-pdf v112-preview-only]';
     const JSPDF_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
     const HTML2CANVAS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
     const LIBRARY_LOAD_TIMEOUT_MS = 20000;
@@ -24,6 +24,7 @@
         // Mode aman: sedikit di atas 1x, dengan batas alokasi yang lebih
         // realistis untuk WebView/Chrome mobile saat report panjang.
         canvasScale: 1.2,
+        previewPhotosOnly: true,
         vectorTextOverlay: false,
         maxCanvasPixels: 12000000,
         maxCanvasHeightPx: 24000,
@@ -785,6 +786,58 @@
         const images = Array.from(clone.querySelectorAll('.report-photo-card img'))
             .filter(img => img.style.display !== 'none');
         const cache = window.__REPORT_PHOTO_CACHE;
+
+        // Foto PDF mengikuti sumber yang sudah tampil di preview. Ini menjaga
+        // export tetap ringan dan mencegah request ulang blob/base64 besar ke GAS.
+        if (CFG.previewPhotosOnly) {
+            const thumbnailFetcher = window.__LIAN_REPORT_PHOTO_THUMBNAIL_FETCHER_V1;
+            let completed = 0;
+            let available = 0;
+            await runWithConcurrency(images, 4, async img => {
+                const previewSource = String(
+                    img.dataset.reportFallbackSrc ||
+                    img.getAttribute('src') ||
+                    img.src ||
+                    ''
+                ).trim();
+
+                if (previewSource) {
+                    img.src = previewSource;
+                    img.style.display = 'block';
+                    img.dataset.reportPhotoFailed = 'false';
+
+                    const fileId = getImageFileId(img);
+                    if (fileId && typeof thumbnailFetcher === 'function') {
+                        try {
+                            const thumbnailDataUrl = await thumbnailFetcher(fileId);
+                            if (String(thumbnailDataUrl || '').startsWith('data:image/')) {
+                                img.src = thumbnailDataUrl;
+                            }
+                        } catch (error) {
+                            console.warn(TAG, 'Proxy thumbnail tidak tersedia, memakai URL preview:', error?.message || error);
+                        }
+                    }
+                    available += 1;
+                }
+                completed += 1;
+                updateOverlay(
+                    `Menyiapkan foto (${completed}/${images.length})...`,
+                    fileName,
+                    20 + ((completed / Math.max(1, images.length)) * 38),
+                    false
+                );
+            });
+
+            updateOverlay(
+                `Menggunakan ${available}/${images.length} foto dari preview...`,
+                fileName,
+                58,
+                false
+            );
+            if (typeof onProgress === 'function') onProgress(available, images.length);
+            return available;
+        }
+
         const fetcher = window.__LIAN_REPORT_PHOTO_FETCHER_V1;
         const batchFetcher = window.__LIAN_REPORT_PHOTO_BATCH_FETCHER_V1;
         const fastFetcher = window.__LIAN_REPORT_PHOTO_FAST_FETCHER_V1;
@@ -836,7 +889,7 @@
                 });
             }
 
-            await runWithConcurrency(chunks, 2, async batch => {
+            await runWithConcurrency(chunks, 1, async batch => {
                 const chunk = batch.ids;
                 const batchTotal = chunks.length;
                 updateOverlay(
@@ -1824,7 +1877,7 @@
         configureButtons,
         refreshPhotoReadiness,
         getFileName,
-        version: 'v111-clear-photo-retry-export-pdf'
+        version: 'v112-preview-only-export-pdf'
     };
 
     ensureUiStyle();
