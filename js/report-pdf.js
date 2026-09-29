@@ -1,5 +1,5 @@
 // ===============================
-// LIAN INSPECTOR - REPORT PDF ENGINE (V99 HEADER SAFE SPACING)
+// LIAN INSPECTOR - REPORT PDF ENGINE (V111 CLEAR PHOTO RETRY STATUS)
 // ===============================
 // Fokus versi ini:
 // - Tidak memakai A4 dan tidak memotong halaman.
@@ -10,9 +10,10 @@
 (function () {
     'use strict';
 
-    const TAG = '[report-pdf v99-header-safe-spacing]';
+    const TAG = '[report-pdf v111-clear-photo-retry]';
     const JSPDF_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
     const HTML2CANVAS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    const LIBRARY_LOAD_TIMEOUT_MS = 20000;
 
     const CFG = {
         // Lebar desain report di aplikasi. Jika report yang tampil punya lebar aktual,
@@ -20,7 +21,12 @@
         fallbackReportWidthPx: 780,
         fixedExportWidthPx: 780,
         renderWindowWidthPx: 1100,
-        canvasScale: 2,
+        // Mode aman: sedikit di atas 1x, dengan batas alokasi yang lebih
+        // realistis untuk WebView/Chrome mobile saat report panjang.
+        canvasScale: 1.2,
+        vectorTextOverlay: false,
+        maxCanvasPixels: 12000000,
+        maxCanvasHeightPx: 24000,
         jpegQuality: 0.96,
         backgroundColor: '#ffffff',
         pdfWidthMm: 210,
@@ -34,6 +40,10 @@
         headerSafeTopPx: 5,
         headerSafeSidePx: 2
     };
+
+    let exportInProgress = false;
+    let overlayProgress = 0;
+    let exportFallbackMode = false;
 
     function cleanText(value) {
         return String(value ?? '')
@@ -135,13 +145,16 @@
                 font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
             }
             .lian-pdf-spinner-v84 {
-                width: 58px; height: 58px; margin: 0 auto 16px; border-radius: 999px;
-                border: 5px solid #dbeafe; border-top-color: #2563eb;
-                animation: lianPdfSpinV84 .75s linear infinite;
+                width:58px; height:58px; margin:0 auto 16px; border-radius:999px;
+                border:5px solid #dbeafe; border-top-color:#2563eb;
+                animation:lianPdfSpinV84 .75s linear infinite;
             }
-            @keyframes lianPdfSpinV84 { to { transform: rotate(360deg); } }
+            @keyframes lianPdfSpinV84 { to { transform:rotate(360deg); } }
             .lian-pdf-title-v84 { font-size: 18px; font-weight: 950; color:#0f172a; margin-bottom:8px; }
             .lian-pdf-subtitle-v84 { font-size: 12px; font-weight:750; color:#64748b; line-height:1.55; }
+            .lian-pdf-progress-track-v84 { height: 9px; margin: 18px 0 7px; border-radius: 999px; background:#e2e8f0; overflow:hidden; }
+            .lian-pdf-progress-bar-v84 { width:0%; height:100%; border-radius:inherit; background:linear-gradient(90deg,#2563eb,#22c55e); transition:width .25s ease; }
+            .lian-pdf-progress-label-v84 { font-size:11px; font-weight:850; color:#64748b; }
 
             .lian-pdf-export-sandbox-v84 {
                 position: fixed !important;
@@ -483,6 +496,7 @@
 
     function showOverlay(message = 'Menyiapkan laporan...', fileName = getFileName()) {
         ensureUiStyle();
+        overlayProgress = 0;
         let overlay = document.getElementById('lianPdfOverlayV84');
         if (!overlay) {
             overlay = document.createElement('div');
@@ -495,16 +509,42 @@
                 <div class="lian-pdf-spinner-v84"></div>
                 <div class="lian-pdf-title-v84">Menyiapkan PDF...</div>
                 <div class="lian-pdf-subtitle-v84"></div>
+                <div class="lian-pdf-progress-track-v84" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="lian-pdf-progress-bar-v84"></div>
+                </div>
+                <div class="lian-pdf-progress-label-v84">0%</div>
             </div>`;
         overlay.style.display = 'flex';
-        updateOverlay(message, fileName);
+        updateOverlay(message, fileName, 0, true);
     }
 
-    function updateOverlay(message, fileName = getFileName()) {
+    function updateOverlay(message, fileName = getFileName(), progress = null, busy = null) {
         const overlay = document.getElementById('lianPdfOverlayV84');
         if (!overlay) return showOverlay(message, fileName);
         const subtitle = overlay.querySelector('.lian-pdf-subtitle-v84');
         if (subtitle) subtitle.innerHTML = `${escapeHtml(fileName)}.pdf<br>${escapeHtml(message)}`;
+        if (Number.isFinite(Number(progress))) {
+            overlayProgress = Math.max(0, Math.min(100, Number(progress)));
+        }
+        const track = overlay.querySelector('.lian-pdf-progress-track-v84');
+        const bar = overlay.querySelector('.lian-pdf-progress-bar-v84');
+        const label = overlay.querySelector('.lian-pdf-progress-label-v84');
+        if (busy !== null && track) track.setAttribute('aria-busy', String(Boolean(busy)));
+        if (track) track.setAttribute('aria-valuenow', String(Math.round(overlayProgress)));
+        if (bar) bar.style.width = `${overlayProgress}%`;
+        if (label) label.textContent = `${Math.round(overlayProgress)}%`;
+    }
+
+    function startSteadyProgress(message, fileName, start = 74, end = 93, durationMs = 60000) {
+        const startedAt = performance.now();
+        updateOverlay(message, fileName, start, false);
+        const timer = setInterval(() => {
+            const elapsed = performance.now() - startedAt;
+            const ratio = Math.max(0, Math.min(1, elapsed / Math.max(1000, durationMs)));
+            const eased = 1 - Math.pow(1 - ratio, 2);
+            updateOverlay(message, fileName, start + ((end - start) * eased), false);
+        }, 500);
+        return () => clearInterval(timer);
     }
 
     function hideOverlay() {
@@ -514,25 +554,48 @@
 
     function loadScriptOnce(src, globalCheck, id) {
         return new Promise((resolve, reject) => {
+            let settled = false;
+            let timeoutId = null;
+
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                if (timeoutId) clearTimeout(timeoutId);
+                callback(value);
+            };
+
+            const fail = (message) => {
+                finish(reject, new Error(message));
+            };
+
             try {
                 if (globalCheck()) return resolve(true);
 
                 const existing = document.getElementById(id);
-                if (existing) {
-                    existing.addEventListener('load', () => resolve(true), { once: true });
-                    existing.addEventListener('error', () => reject(new Error('Gagal memuat library PDF.')), { once: true });
-                    return;
+                const script = existing || document.createElement('script');
+
+                const handleLoad = () => {
+                    if (globalCheck()) finish(resolve, true);
+                    else fail('Library PDF termuat tetapi tidak menyediakan fungsi yang diperlukan.');
+                };
+                const handleError = () => fail('Gagal memuat library PDF. Pastikan internet aktif.');
+
+                script.addEventListener('load', handleLoad, { once: true });
+                script.addEventListener('error', handleError, { once: true });
+
+                if (!existing) {
+                    script.id = id;
+                    script.src = src;
+                    script.async = true;
+                    document.head.appendChild(script);
                 }
 
-                const script = document.createElement('script');
-                script.id = id;
-                script.src = src;
-                script.async = true;
-                script.onload = () => resolve(true);
-                script.onerror = () => reject(new Error('Gagal memuat library PDF. Pastikan internet aktif.'));
-                document.head.appendChild(script);
+                timeoutId = setTimeout(() => {
+                    if (!globalCheck() && script.parentNode) script.remove();
+                    fail(`Timeout memuat library PDF setelah ${Math.round(LIBRARY_LOAD_TIMEOUT_MS / 1000)} detik.`);
+                }, LIBRARY_LOAD_TIMEOUT_MS);
             } catch (err) {
-                reject(err);
+                fail(err?.message || String(err));
             }
         });
     }
@@ -573,7 +636,7 @@
             extractGoogleDriveFileId(img.getAttribute('data-src') || '');
     }
 
-    async function waitForImages(root, timeout = 26000) {
+    async function waitForImages(root, timeout = 8000) {
         const images = Array.from(root.querySelectorAll('img'))
             .filter(img => String(img.getAttribute('src') || img.src || '').trim());
         if (images.length === 0) return;
@@ -585,52 +648,297 @@
                     const done = () => resolve(true);
                     img.addEventListener('load', done, { once: true });
                     img.addEventListener('error', done, { once: true });
-                    setTimeout(done, 9000);
+                    setTimeout(done, 3000);
                 });
             })),
             new Promise(resolve => setTimeout(resolve, timeout))
         ]);
     }
 
-    async function hydratePhotosForExport(fileName) {
-        const reportRoot = getReportRoot();
-
-        if (typeof hydrateReportDrivePhotos === 'function') {
-            try {
-                updateOverlay('Memuat foto dokumentasi...', fileName);
-                await hydrateReportDrivePhotos();
-            } catch (err) {
-                console.warn(TAG, 'hydrateReportDrivePhotos gagal, lanjut manual:', err?.message || err);
+    async function runWithConcurrency(items, limit, worker) {
+        const queue = [...items];
+        const runnerCount = Math.min(Math.max(1, limit), queue.length);
+        const runners = Array.from({ length: runnerCount }, async () => {
+            while (queue.length) {
+                const item = queue.shift();
+                await worker(item);
             }
-        }
+        });
+        await Promise.all(runners);
+    }
 
-        const driveImages = Array.from(reportRoot.querySelectorAll('img')).filter(img => {
-            const src = String(img.getAttribute('src') || img.src || '').trim();
-            if (!src || src.startsWith('data:image/')) return false;
-            return Boolean(getImageFileId(img)) || src.includes('drive.google.com') || src.includes('googleusercontent.com');
+    function downsampleExportPhoto(source, maxWidth = 900) {
+        return new Promise(resolve => {
+            const probe = new Image();
+            probe.onload = () => {
+                const sourceWidth = Number(probe.naturalWidth || probe.width || 0);
+                const sourceHeight = Number(probe.naturalHeight || probe.height || 0);
+                if (!sourceWidth || !sourceHeight || sourceWidth <= maxWidth) {
+                    resolve(source);
+                    return;
+                }
+
+                const scale = maxWidth / sourceWidth;
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+                canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+
+                try {
+                    const ctx = canvas.getContext('2d', { alpha: false });
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(probe, 0, 0, canvas.width, canvas.height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.88));
+                } catch (error) {
+                    console.warn(TAG, 'Downsample foto export dilewati:', error?.message || error);
+                    resolve(source);
+                } finally {
+                    canvas.width = 1;
+                    canvas.height = 1;
+                }
+            };
+            probe.onerror = () => resolve(source);
+            probe.src = source;
+        });
+    }
+
+    async function prepareExportPhotoImages(clone) {
+        const images = Array.from(clone.querySelectorAll('.report-photo-card img'))
+            .filter(img => img.style.display !== 'none');
+        const cache = window.__REPORT_PHOTO_CACHE;
+        let reduced = 0;
+
+        await runWithConcurrency(images, 2, async img => {
+            const fileId = getImageFileId(img);
+            const cachedSource = fileId && typeof cache?.get === 'function'
+                ? cache.get(fileId)
+                : '';
+            const source = String(cachedSource || img.getAttribute('src') || img.src || '').trim();
+            if (!source.startsWith('data:image/')) return;
+
+            const optimized = await downsampleExportPhoto(source, 900);
+            if (optimized && optimized !== source) {
+                img.src = optimized;
+                reduced += 1;
+            }
         });
 
-        let loaded = 0;
-        for (const img of driveImages) {
+        return reduced;
+    }
+
+    function isReportImageReady(img) {
+        if (!img) return false;
+        const src = String(img.getAttribute('src') || img.src || '').trim();
+        return Boolean(src && img.complete && img.naturalWidth > 0 && img.style.display !== 'none');
+    }
+
+    function getPendingReportThumbnails(root) {
+        if (!root) return [];
+        return Array.from(root.querySelectorAll('.report-photo-card img')).filter(img => {
+            const src = String(img.getAttribute('src') || img.src || '').trim();
             const fileId = getImageFileId(img);
-            if (!fileId || typeof fetchReportPhotoDataUrl !== 'function') continue;
-            try {
-                updateOverlay(`Memuat foto ${loaded + 1}/${driveImages.length}...`, fileName);
-                const dataUrl = await fetchReportPhotoDataUrl(fileId);
-                if (String(dataUrl || '').startsWith('data:image/')) {
-                    img.src = dataUrl;
-                    img.removeAttribute('data-report-drive-file-id');
-                    img.style.display = 'block';
-                    img.closest('a')?.querySelector?.('[data-photo-loading="true"]')?.remove();
-                    img.closest('a')?.querySelector?.('[data-photo-fallback="true"]')?.remove();
-                    loaded += 1;
-                }
-            } catch (err) {
-                console.warn(TAG, 'foto gagal di-inline:', fileId, err?.message || err);
-            }
+            if (!src && !fileId) return false;
+            return !isReportImageReady(img);
+        });
+    }
+
+    function refreshPhotoReadiness() {
+        const button = document.getElementById('downloadReportBtn');
+        if (!button) return;
+
+        let root = null;
+        try {
+            root = getReportRoot();
+        } catch (_) {
+            button.disabled = true;
+            button.setAttribute('aria-disabled', 'true');
+            button.title = 'Report belum siap';
+            button.style.opacity = '0.55';
+            button.style.cursor = 'not-allowed';
+            return false;
         }
 
-        await waitForImages(reportRoot, 26000);
+        const pending = getPendingReportThumbnails(root);
+        const ready = pending.length === 0;
+        button.disabled = false;
+        button.setAttribute('aria-disabled', 'false');
+        button.title = ready
+            ? 'Export PDF dari thumbnail yang sudah tampil'
+            : `Export tetap bisa dilakukan; ${pending.length} thumbnail masih dimuat`;
+        button.style.opacity = '1';
+        button.style.cursor = 'pointer';
+        return ready;
+    }
+
+    async function hydratePhotosForExport(fileName) {
+        const reportRoot = getReportRoot();
+        const pending = getPendingReportThumbnails(reportRoot);
+        updateOverlay(
+            pending.length > 0
+                ? `Menyusun PDF dengan ${pending.length} thumbnail yang masih dimuat...`
+                : 'Thumbnail siap. Menyusun PDF...',
+            fileName
+        );
+    }
+
+    async function ensureExportPhotoSources(clone, fileName, onProgress = null) {
+        const images = Array.from(clone.querySelectorAll('.report-photo-card img'))
+            .filter(img => img.style.display !== 'none');
+        const cache = window.__REPORT_PHOTO_CACHE;
+        const fetcher = window.__LIAN_REPORT_PHOTO_FETCHER_V1;
+        const batchFetcher = window.__LIAN_REPORT_PHOTO_BATCH_FETCHER_V1;
+        const fastFetcher = window.__LIAN_REPORT_PHOTO_FAST_FETCHER_V1;
+        const candidates = images.filter(img => {
+            const fileId = getImageFileId(img);
+            const cached = fileId && typeof cache?.get === 'function' ? cache.get(fileId) : '';
+            const source = String(cached || img.getAttribute('src') || img.src || '').trim();
+            // Data URL yang sudah benar-benar terpasang di preview aman dipakai
+            // langsung; tidak perlu meminta ulang foto yang sama ke GAS.
+            return fileId && !source.startsWith('data:image/');
+        });
+
+        if (candidates.length === 0) return 0;
+
+        updateOverlay(`Memastikan ${candidates.length} sumber foto untuk PDF...`, fileName, null, true);
+        let loaded = 0;
+        let completed = 0;
+        const candidateIds = [...new Set(candidates.map(getImageFileId).filter(Boolean))];
+        const candidateById = new Map();
+        candidates.forEach(img => {
+            const fileId = getImageFileId(img);
+            if (!candidateById.has(fileId)) candidateById.set(fileId, []);
+            candidateById.get(fileId).push(img);
+        });
+
+        const applyCachedPhoto = (fileId, dataUrl) => {
+            if (!String(dataUrl || '').startsWith('data:image/')) return false;
+            (candidateById.get(fileId) || []).forEach(img => {
+                img.src = dataUrl;
+                img.dataset.reportDataLoaded = 'true';
+                img.removeAttribute('data-report-photo-failed');
+            });
+            loaded += candidateById.get(fileId)?.length || 0;
+            return true;
+        };
+        const reportProgress = () => {
+            if (typeof onProgress === 'function') onProgress(completed, candidates.length);
+        };
+        reportProgress();
+
+        // Jalur utama: satu request GAS untuk beberapa file sekaligus.
+        const batchSize = 6;
+        if (typeof batchFetcher === 'function') {
+            const chunks = [];
+            for (let index = 0; index < candidateIds.length; index += batchSize) {
+                chunks.push({
+                    ids: candidateIds.slice(index, index + batchSize),
+                    index: chunks.length
+                });
+            }
+
+            await runWithConcurrency(chunks, 2, async batch => {
+                const chunk = batch.ids;
+                const batchTotal = chunks.length;
+                updateOverlay(
+                    `Mengambil foto batch ${batch.index + 1}/${batchTotal} (${Math.min(completed, candidates.length)}/${candidates.length})...`,
+                    fileName,
+                    20 + ((batch.index / Math.max(1, batchTotal)) * 36),
+                    true
+                );
+                try {
+                    await batchFetcher(chunk);
+                    chunk.forEach(fileId => {
+                        const dataUrl = cache?.get?.(fileId) || '';
+                        if (applyCachedPhoto(fileId, dataUrl)) {
+                            completed += candidateById.get(fileId)?.length || 0;
+                        }
+                    });
+                    reportProgress();
+                } catch (error) {
+                    console.warn(TAG, 'Batch sumber foto gagal, memakai fallback:', error?.message || error);
+                } finally {
+                    updateOverlay(
+                        `Batch foto selesai diproses (${Math.min(completed, candidates.length)}/${candidates.length})...`,
+                        fileName,
+                        20 + ((Math.min(completed, candidates.length) / Math.max(1, candidates.length)) * 38),
+                        false
+                    );
+                }
+            });
+        }
+
+        const markPhotoUnavailable = img => {
+            img.dataset.reportPhotoFailed = 'true';
+            img.removeAttribute('src');
+            img.style.display = 'none';
+        };
+
+        // Foto yang belum dikembalikan batch dicoba ulang dengan timeout pendek.
+        // Ini memperbaiki beberapa foto yang gagal tanpa mengulang pola request
+        // panjang untuk seluruh daftar foto.
+        const remaining = candidates.filter(img => {
+            const source = String(img.getAttribute('src') || img.src || '').trim();
+            return !source.startsWith('data:image/');
+        });
+        const fallbackFetcher = typeof batchFetcher === 'function'
+            ? (typeof fastFetcher === 'function' ? fastFetcher : fetcher)
+            : fetcher;
+        if (typeof fallbackFetcher === 'function') {
+            await runWithConcurrency(remaining, 4, async img => {
+                const fileId = getImageFileId(img);
+                try {
+                    const dataUrl = await fallbackFetcher(fileId);
+                    if (!String(dataUrl || '').startsWith('data:image/')) {
+                        throw new Error('GAS tidak mengembalikan data URL gambar');
+                    }
+                    applyCachedPhoto(fileId, dataUrl);
+                } catch (error) {
+                    console.warn(TAG, 'Retry cepat sumber foto gagal:', fileId, error?.message || error);
+                } finally {
+                    completed += 1;
+                    reportProgress();
+                }
+            });
+        }
+
+        // Putaran terakhir hanya untuk file yang masih gagal. Retry ini memakai
+        // request normal dan concurrency rendah agar dua-tiga foto yang lambat
+        // masih punya kesempatan berhasil tanpa mengulang semua foto.
+        const retryIds = [...new Set(candidates.filter(img => {
+            const source = String(img.getAttribute('src') || img.src || '').trim();
+            return !source.startsWith('data:image/');
+        }).map(getImageFileId).filter(Boolean))];
+        if (retryIds.length > 0 && typeof batchFetcher === 'function' && typeof fetcher === 'function') {
+            let retried = 0;
+            updateOverlay(`Mencoba ulang ${retryIds.length} foto gagal (bukan semua foto)...`, fileName, 58, false);
+            await runWithConcurrency(retryIds, 2, async fileId => {
+                try {
+                    const dataUrl = await fetcher(fileId);
+                    if (!String(dataUrl || '').startsWith('data:image/')) {
+                        throw new Error('GAS tidak mengembalikan data URL gambar');
+                    }
+                    applyCachedPhoto(fileId, dataUrl);
+                } catch (error) {
+                    console.warn(TAG, 'Retry akhir sumber foto gagal:', fileId, error?.message || error);
+                } finally {
+                    retried += 1;
+                    updateOverlay(
+                        `Mencoba ulang foto gagal (${retried}/${retryIds.length})...`,
+                        fileName,
+                        58 + ((retried / Math.max(1, retryIds.length)) * 2),
+                        false
+                    );
+                }
+            });
+        }
+
+        const finalRemaining = candidates.filter(img => {
+            const source = String(img.getAttribute('src') || img.src || '').trim();
+            return !source.startsWith('data:image/');
+        });
+        finalRemaining.forEach(markPhotoUnavailable);
+
+        return loaded;
     }
 
     function getActualReportWidth(root) {
@@ -816,8 +1124,21 @@
         // Hapus tombol/badge editor yang tidak perlu tercetak kalau ada.
         clone.querySelectorAll('.report-remove-badge, .report-no-print').forEach(el => el.remove());
 
-        // V93: setelah foto berhasil dihydrate, placeholder loading/fallback tidak boleh ikut tercapture.
-        clone.querySelectorAll('[data-photo-loading="true"], [data-photo-fallback="true"]').forEach(el => el.remove());
+        // Placeholder gagal tetap dicetak agar export tidak menampilkan gambar rusak.
+        clone.querySelectorAll('[data-photo-loading="true"]').forEach(el => el.remove());
+        clone.querySelectorAll('[data-photo-fallback="true"]').forEach(el => {
+            const card = el.closest('.report-photo-card');
+            const failedImage = card?.querySelector('img[data-report-photo-failed="true"]');
+            if (!failedImage) {
+                el.remove();
+                return;
+            }
+
+            failedImage.style.setProperty('display', 'none', 'important');
+            el.style.setProperty('display', 'flex', 'important');
+            const message = el.querySelector('span:last-child');
+            if (message) message.textContent = 'Foto tidak tersedia saat export';
+        });
 
         // Pastikan tidak ada lazy image yang belum kebaca.
         // Penting: foto dokumentasi kendaraan tidak boleh di-stretch/crop paksa.
@@ -833,7 +1154,11 @@
             img.style.setProperty('aspect-ratio', 'auto', 'important');
             img.style.setProperty('object-fit', 'contain', 'important');
             img.style.setProperty('object-position', 'center center', 'important');
-            img.style.setProperty('display', 'block', 'important');
+            if (img.dataset.reportPhotoFailed === 'true') {
+                img.style.setProperty('display', 'none', 'important');
+            } else {
+                img.style.setProperty('display', 'block', 'important');
+            }
         });
 
         // Kunci layout desktop agar hasil export tidak berubah saat dibuka dari HP.
@@ -958,8 +1283,83 @@
         } catch (_) {}
     }
 
-    async function renderLongCanvas(clone, widthPx) {
-        await waitForImages(clone, 26000);
+    function createExportGroupPlan(clone) {
+        const rootRect = clone.getBoundingClientRect();
+        const children = Array.from(clone.children || [])
+            .filter(el => el.tagName !== 'STYLE');
+        const pointIndex = children.findIndex(el => {
+            return Boolean(el.querySelector?.('.report-point-section')) ||
+                cleanText(el.textContent || '').startsWith('Poin Inspeksi');
+        });
+        const photoIndex = children.findIndex(el => {
+            return Boolean(el.querySelector?.('.report-photo-grid'));
+        });
+        const boundaries = new Set([0, children.length]);
+        if (pointIndex > 0) boundaries.add(pointIndex);
+        if (photoIndex > 0) boundaries.add(photoIndex);
+        const sorted = [...boundaries].sort((a, b) => a - b);
+        const groups = [];
+
+        for (let index = 0; index < sorted.length - 1; index += 1) {
+            const start = sorted[index];
+            const end = sorted[index + 1];
+            const entries = children.slice(start, end).map(source => {
+                const rect = source.getBoundingClientRect();
+                return {
+                    source,
+                    left: Math.max(0, rect.left - rootRect.left),
+                    top: Math.max(0, rect.top - rootRect.top),
+                    width: Math.max(1, rect.width),
+                    bottom: Math.max(0, rect.bottom - rootRect.top)
+                };
+            });
+            if (entries.length === 0) continue;
+
+            const top = Math.min(...entries.map(entry => entry.top));
+            const bottom = Math.max(...entries.map(entry => entry.bottom));
+            groups.push({
+                label: pointIndex >= start && pointIndex < end
+                    ? 'poin inspeksi'
+                    : photoIndex >= start && photoIndex < end
+                        ? 'foto dan footer'
+                        : 'ringkasan report',
+                top,
+                height: Math.max(1, bottom - top),
+                entries
+            });
+        }
+
+        // Fallback defensif: bila struktur report berubah dan tidak ada child
+        // yang bisa dibagi, tetap render seluruh report dalam satu grup.
+        if (groups.length === 0) {
+            const fallbackEntries = children.map(source => {
+                const rect = source.getBoundingClientRect();
+                return {
+                    source,
+                    left: Math.max(0, rect.left - rootRect.left),
+                    top: Math.max(0, rect.top - rootRect.top),
+                    width: Math.max(1, rect.width),
+                    bottom: Math.max(0, rect.bottom - rootRect.top)
+                };
+            });
+            const fallbackBottom = Math.max(
+                clone.getBoundingClientRect().height || 0,
+                ...fallbackEntries.map(entry => entry.bottom),
+                1
+            );
+            groups.push({
+                label: 'report lengkap',
+                top: 0,
+                height: Math.max(1, fallbackBottom),
+                entries: fallbackEntries
+            });
+        }
+
+        return groups;
+    }
+
+    async function getExportRenderMetrics(clone, widthPx) {
+        await waitForImages(clone, 8000);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
         const measuredHeight = Math.max(
@@ -969,33 +1369,257 @@
             1
         );
         const heightPx = Math.ceil(measuredHeight + Math.max(0, CFG.footerSafeExtraPx || 0));
+        const requestedScale = exportFallbackMode
+            ? 1
+            : (Number(CFG.canvasScale) > 0 ? Number(CFG.canvasScale) : 1);
+        const maxPixels = exportFallbackMode
+            ? 8000000
+            : Math.max(1000000, Number(CFG.maxCanvasPixels) || 8000000);
+        const maxCanvasHeight = exportFallbackMode
+            ? 20000
+            : Math.max(6000, Number(CFG.maxCanvasHeightPx) || 24000);
+        const maxScaleByPixels = Math.sqrt(maxPixels / Math.max(1, widthPx * heightPx));
+        const maxScaleByHeight = maxCanvasHeight / Math.max(1, heightPx);
+        const renderScale = Math.max(
+            0.5,
+            Math.min(requestedScale, maxScaleByPixels, maxScaleByHeight)
+        );
 
-        return window.html2canvas(clone, {
-            backgroundColor: CFG.backgroundColor,
-            scale: CFG.canvasScale,
-            useCORS: true,
-            allowTaint: true,
-            logging: false,
-            imageTimeout: 26000,
-            width: widthPx,
-            height: heightPx,
-            windowWidth: Math.max(widthPx, CFG.renderWindowWidthPx || widthPx),
-            windowHeight: Math.max(heightPx, 1600),
-            scrollX: 0,
-            scrollY: 0,
-            onclone: (doc) => {
-                const clonedRoot = doc.querySelector('.lian-pdf-export-sandbox-v84 .report-v25') ||
-                    doc.querySelector('.lian-pdf-export-sandbox-v84 > *');
-                if (clonedRoot) normalizeCloneForLongPdf(clonedRoot, widthPx);
+        console.info(TAG, 'Single-pass high-resolution canvas render:', {
+            widthPx,
+            heightPx,
+            renderScale: Number(renderScale.toFixed(3))
+        });
+
+        return { widthPx, heightPx, renderScale };
+    }
+
+    function hasPdfRasterOnlySymbol(text) {
+        return /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(String(text || ''));
+    }
+
+    function getPdfTextColor(cssColor) {
+        const text = String(cssColor || '').trim();
+        const hex = text.match(/^#([0-9a-f]{3,8})$/i);
+        if (hex) {
+            let value = hex[1];
+            if (value.length === 3) value = value.split('').map(part => part + part).join('');
+            return [
+                parseInt(value.slice(0, 2), 16),
+                parseInt(value.slice(2, 4), 16),
+                parseInt(value.slice(4, 6), 16)
+            ];
+        }
+
+        const rgb = text.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+        if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+        return [15, 23, 42];
+    }
+
+    function sanitizePdfText(text) {
+        return String(text || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/[—–]/g, '-')
+            .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+            .replace(/\u2713/g, 'v')
+            .replace(/\u2022/g, '-')
+            .replace(/[^\x20-\xFF]/g, '');
+    }
+
+    function collectVectorTextOverlay(clone) {
+        if (!CFG.vectorTextOverlay || !clone || typeof document.createTreeWalker !== 'function') return [];
+
+        const records = [];
+        const rasterOnlyParents = new Set();
+        const rootRect = clone.getBoundingClientRect();
+        const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+
+        while (node) {
+            const raw = String(node.nodeValue || '');
+            const parent = node.parentElement;
+            const hiddenParent = parent?.closest('style,script,svg,canvas,button,[data-report-photo-retry="true"]');
+            if (!parent || hiddenParent || !cleanText(raw)) {
+                node = walker.nextNode();
+                continue;
             }
+            if (hasPdfRasterOnlySymbol(raw)) {
+                rasterOnlyParents.add(parent);
+                node = walker.nextNode();
+                continue;
+            }
+
+            const style = getComputedStyle(parent);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+                node = walker.nextNode();
+                continue;
+            }
+
+            const range = document.createRange();
+            const lines = new Map();
+            for (let index = 0; index < raw.length; index += 1) {
+                range.setStart(node, index);
+                range.setEnd(node, index + 1);
+                const rect = range.getBoundingClientRect();
+                if (!rect || rect.height <= 0) continue;
+                const key = Math.round(rect.top * 2) / 2;
+                const existing = lines.get(key);
+                if (existing) {
+                    existing.end = index + 1;
+                    if (!/\s/.test(raw[index])) existing.left = Math.min(existing.left, rect.left);
+                } else {
+                    lines.set(key, {
+                        start: index,
+                        end: index + 1,
+                        left: rect.left,
+                        top: rect.top,
+                        height: rect.height
+                    });
+                }
+            }
+
+            lines.forEach(line => {
+                const text = sanitizePdfText(raw.slice(line.start, line.end)).trim();
+                if (!text) return;
+                records.push({
+                    text,
+                    left: line.left - rootRect.left,
+                    top: line.top - rootRect.top,
+                    height: line.height,
+                    fontSize: Number.parseFloat(style.fontSize) || 12,
+                    fontWeight: Number.parseInt(style.fontWeight, 10) || 400,
+                    fontStyle: style.fontStyle || 'normal',
+                    color: getPdfTextColor(style.color),
+                    parent
+                });
+            });
+            node = walker.nextNode();
+        }
+
+        const safeRecords = records.filter(record => {
+            for (const rasterParent of rasterOnlyParents) {
+                if (rasterParent === record.parent || rasterParent.contains(record.parent)) return false;
+            }
+            return true;
+        });
+
+        const vectorParents = new Set(safeRecords.map(record => record.parent));
+        vectorParents.forEach(parent => {
+            parent.style.setProperty('color', 'transparent', 'important');
+        });
+        safeRecords.forEach(record => delete record.parent);
+        return safeRecords;
+    }
+
+    function drawVectorTextOverlay(pdf, records, widthPx, size, contentScale) {
+        if (!pdf || !Array.isArray(records) || records.length === 0) return;
+        const mmPerPx = size.contentW / Math.max(1, widthPx);
+        const ptPerPx = mmPerPx * (72 / 25.4);
+        records.forEach(record => {
+            const fontStyle = record.fontStyle === 'italic'
+                ? (record.fontWeight >= 600 ? 'bolditalic' : 'italic')
+                : (record.fontWeight >= 600 ? 'bold' : 'normal');
+            const fontSize = Math.max(5, (record.fontSize || 12) * ptPerPx * contentScale);
+            const x = size.padding + (record.left / Math.max(1, widthPx)) * size.contentW;
+            const y = size.padding + ((record.top + record.height * 0.82) / Math.max(1, widthPx)) * size.contentW * contentScale;
+            pdf.setFont('helvetica', fontStyle);
+            pdf.setFontSize(fontSize);
+            pdf.setTextColor(...record.color);
+            pdf.text(record.text, x, y, { baseline: 'alphabetic' });
         });
     }
 
-    function calculateLongPdfSize(canvas) {
+    function createExportGroupViewport(sandbox, clone, widthPx, group) {
+        const viewport = document.createElement('div');
+        viewport.className = 'lian-pdf-export-group-v84';
+        viewport.style.position = 'fixed';
+        viewport.style.left = '-12000px';
+        viewport.style.top = '0';
+        viewport.style.width = `${widthPx}px`;
+        viewport.style.height = `${group.height}px`;
+        viewport.style.overflow = 'hidden';
+        viewport.style.padding = '0';
+        viewport.style.margin = '0';
+        viewport.style.background = CFG.backgroundColor;
+
+        const groupRoot = document.createElement('div');
+        groupRoot.className = 'report-v25';
+        groupRoot.style.cssText = clone.style.cssText;
+        groupRoot.style.position = 'relative';
+        groupRoot.style.width = `${widthPx}px`;
+        groupRoot.style.minWidth = `${widthPx}px`;
+        groupRoot.style.maxWidth = `${widthPx}px`;
+        groupRoot.style.height = `${group.height}px`;
+        groupRoot.style.margin = '0';
+        groupRoot.style.setProperty('padding', '0', 'important');
+        groupRoot.style.overflow = 'visible';
+        groupRoot.style.transform = 'none';
+
+        const inlineStyle = Array.from(clone.children || [])
+            .find(el => el.tagName === 'STYLE');
+        if (inlineStyle) groupRoot.appendChild(inlineStyle.cloneNode(true));
+
+        group.entries.forEach(entry => {
+            const child = entry.source.cloneNode(true);
+            child.style.setProperty('position', 'absolute', 'important');
+            child.style.setProperty('left', `${entry.left}px`, 'important');
+            child.style.setProperty('top', `${entry.top - group.top}px`, 'important');
+            child.style.setProperty('width', `${entry.width}px`, 'important');
+            child.style.setProperty('margin', '0', 'important');
+            groupRoot.appendChild(child);
+        });
+
+        viewport.appendChild(groupRoot);
+        sandbox.appendChild(viewport);
+        return viewport;
+    }
+
+    async function renderExportGroup(sandbox, clone, widthPx, group, renderScale) {
+        const viewport = createExportGroupViewport(sandbox, clone, widthPx, group);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        try {
+            return await window.html2canvas(viewport, {
+                backgroundColor: CFG.backgroundColor,
+                scale: renderScale,
+                useCORS: true,
+                allowTaint: true,
+                logging: false,
+                imageTimeout: 8000,
+                width: widthPx,
+                height: Math.ceil(group.height),
+                windowWidth: Math.max(widthPx, CFG.renderWindowWidthPx || widthPx),
+                windowHeight: Math.max(group.height, 1600),
+                scrollX: 0,
+                scrollY: 0
+            });
+        } finally {
+            if (viewport.parentNode) viewport.parentNode.removeChild(viewport);
+        }
+    }
+
+    async function renderExportWhole(clone, widthPx, heightPx, renderScale) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return window.html2canvas(clone, {
+            backgroundColor: CFG.backgroundColor,
+            scale: renderScale,
+            useCORS: true,
+            allowTaint: true,
+            logging: false,
+            imageTimeout: 8000,
+            width: widthPx,
+            height: Math.ceil(heightPx),
+            windowWidth: Math.max(widthPx, CFG.renderWindowWidthPx || widthPx),
+            windowHeight: Math.max(heightPx, 1600),
+            scrollX: 0,
+            scrollY: 0
+        });
+    }
+
+    function calculateLongPdfSize(widthPx, heightPx) {
         const pdfW = CFG.pdfWidthMm;
         const padding = CFG.pdfSafePaddingMm;
         const contentW = pdfW - padding * 2;
-        let contentH = (canvas.height / canvas.width) * contentW;
+        let contentH = (heightPx / Math.max(1, widthPx)) * contentW;
         contentH = Math.max(1, contentH);
 
         let pdfH = contentH + padding * 2;
@@ -1011,26 +1635,70 @@
     }
 
     async function exportPdf() {
+        if (exportInProgress) {
+            if (typeof showToast === 'function') showToast('Export PDF masih berjalan. Tunggu sampai selesai.', 'error');
+            return;
+        }
+        exportInProgress = true;
         const fileName = getFileName();
         let sandbox = null;
+        const exportStartedAt = performance.now();
+        const markExportStage = (stage) => {
+            const elapsed = Math.round(performance.now() - exportStartedAt);
+            console.info(TAG, `${stage}: ${elapsed}ms`);
+        };
+
+        refreshPhotoReadiness();
+
+        let pendingThumbnails = [];
+        try {
+            pendingThumbnails = getPendingReportThumbnails(getReportRoot());
+        } catch (err) {
+            if (typeof showToast === 'function') showToast(err?.message || String(err), 'error');
+            else alert(err?.message || String(err));
+            exportInProgress = false;
+            return;
+        }
+
+        if (pendingThumbnails.length > 0) {
+            // Export tetap boleh dimulai. Sumber foto akan dipastikan ulang
+            // melalui GAS; bila tetap gagal, kartu foto memakai placeholder.
+            console.info(TAG, `${pendingThumbnails.length} thumbnail belum siap; export tetap dilanjutkan.`);
+        }
 
         showOverlay('Menyiapkan library PDF...', fileName);
         try {
             await ensureLibraries();
+            markExportStage('library siap');
+            updateOverlay('Library PDF siap...', fileName, 10, false);
             await hydratePhotosForExport(fileName);
+            markExportStage('foto siap');
+            updateOverlay('Menyiapkan foto laporan...', fileName, 15, false);
 
-            updateOverlay('Mengambil tampilan penuh report...', fileName);
+            updateOverlay('Mengambil tampilan penuh report...', fileName, 20, false);
             const cloneInfo = createExportClone();
             sandbox = cloneInfo.sandbox;
             const clone = cloneInfo.clone;
             const widthPx = cloneInfo.widthPx;
+            markExportStage('clone report siap');
 
-            updateOverlay('Membuat screen capture...', fileName);
-            const canvas = await renderLongCanvas(clone, widthPx);
-            const imgData = canvas.toDataURL('image/jpeg', CFG.jpegQuality);
-            const size = calculateLongPdfSize(canvas);
+            const exportPhotoCount = await ensureExportPhotoSources(clone, fileName, (done, total) => {
+                const ratio = total > 0 ? done / total : 1;
+                updateOverlay(`Memastikan sumber foto (${Math.min(done, total)}/${total})...`, fileName, 20 + (ratio * 38), false);
+            });
+            markExportStage(`${exportPhotoCount} sumber foto dipastikan`);
+            updateOverlay('Sumber foto selesai dipastikan...', fileName, 60, false);
 
-            updateOverlay('Membuat file PDF...', fileName);
+            updateOverlay('Mengoptimalkan salinan foto untuk PDF...', fileName, 62, true);
+            const reducedPhotoCount = await prepareExportPhotoImages(clone);
+            markExportStage(`${reducedPhotoCount} foto diringankan`);
+            updateOverlay('Foto siap dirender...', fileName, 66, false);
+
+            updateOverlay('Mengukur report untuk PDF...', fileName, 69, true);
+            const metrics = await getExportRenderMetrics(clone, widthPx);
+            const size = calculateLongPdfSize(widthPx, metrics.heightPx);
+            markExportStage(`metrics siap (${metrics.heightPx}px)`);
+
             const { jsPDF } = window.jspdf;
             const pdf = new jsPDF({
                 orientation: 'portrait',
@@ -1045,28 +1713,65 @@
                 creator: 'LianInspector'
             });
 
-            pdf.addImage(
-                imgData,
-                'JPEG',
-                size.padding,
-                size.padding,
-                size.contentW,
-                size.contentH,
-                undefined,
-                'FAST'
+            const uncappedContentHeight = (metrics.heightPx / Math.max(1, widthPx)) * size.contentW;
+            const contentScale = size.contentH / Math.max(1, uncappedContentHeight);
+            const stopRenderProgress = startSteadyProgress(
+                'Merender PDF resolusi tinggi (tahap akhir)...',
+                fileName,
+                74,
+                93,
+                60000
             );
+            let canvas = null;
+            try {
+                canvas = await renderExportWhole(
+                    clone,
+                    widthPx,
+                    metrics.heightPx,
+                    metrics.renderScale
+                );
+            } finally {
+                stopRenderProgress();
+            }
+
+            try {
+                const imgData = canvas.toDataURL('image/jpeg', CFG.jpegQuality);
+                pdf.addImage(
+                    imgData,
+                    'JPEG',
+                    size.padding,
+                    size.padding,
+                    size.contentW,
+                    size.contentH,
+                    undefined,
+                    'FAST'
+                );
+            } finally {
+                canvas.width = 1;
+                canvas.height = 1;
+            }
+
+            updateOverlay('Menyimpan file PDF...', fileName, 96, false);
+            markExportStage('PDF selesai dirakit');
             pdf.save(`${fileName}.pdf`);
+            updateOverlay('PDF berhasil dibuat.', fileName, 100, false);
+            exportFallbackMode = false;
 
             if (typeof showToast === 'function') {
                 showToast('✓ PDF berhasil dibuat dari tampilan report');
             }
         } catch (err) {
             console.error(TAG, 'export gagal:', err);
-            if (typeof showToast === 'function') showToast('Gagal export PDF: ' + (err?.message || err), 'error');
-            else alert('Gagal export PDF: ' + (err?.message || err));
+            exportFallbackMode = true;
+            if (typeof showToast === 'function') {
+                showToast('Export PDF belum selesai. Silakan jalankan kembali.', 'error');
+            } else {
+                alert('Export PDF belum selesai. Silakan jalankan kembali.');
+            }
         } finally {
             removeExportClone(sandbox);
             hideOverlay();
+            exportInProgress = false;
         }
     }
 
@@ -1110,17 +1815,19 @@
             }
         );
 
+        refreshPhotoReadiness();
         try { if (window.lucide) lucide.createIcons(); } catch (_) {}
     }
 
     window.LianReportPdf = {
         exportPdf,
         configureButtons,
+        refreshPhotoReadiness,
         getFileName,
-        version: 'v99-header-safe-spacing-export-pdf'
+        version: 'v111-clear-photo-retry-export-pdf'
     };
 
     ensureUiStyle();
     setTimeout(() => configureButtons(), 250);
-    console.log('✅ report-pdf.js v99 header safe spacing loaded');
+    console.log('✅ report-pdf.js v111 clear photo retry loaded');
 })();

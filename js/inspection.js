@@ -2037,6 +2037,72 @@ async function restoreOfflineDraft(options = {}) {
             return `${GAS_UPLOAD_URL}${separator}action=getImage&fileId=${encodeURIComponent(fileId)}`;
         }
 
+        const REPORT_PHOTO_REQUEST_TIMEOUT_MS = 20000;
+        const REPORT_PHOTO_REQUEST_MAX_ATTEMPTS = 2;
+        const REPORT_PHOTO_RETRY_DELAY_MS = 600;
+
+        function fetchReportPhotoRequest(url, options = {}, timeoutMs = REPORT_PHOTO_REQUEST_TIMEOUT_MS) {
+            const controller = typeof AbortController === 'function'
+                ? new AbortController()
+                : null;
+            const requestOptions = controller
+                ? { ...options, signal: controller.signal }
+                : options;
+            let timeoutId = null;
+
+            const request = fetch(url, requestOptions).then(response => {
+                if (!response.ok) {
+                    const error = new Error(`Request foto gagal (HTTP ${response.status})`);
+                    error.status = response.status;
+                    throw error;
+                }
+                return response;
+            });
+
+            const timeout = new Promise((_, reject) => {
+                timeoutId = setTimeout(() => {
+                    if (controller) controller.abort();
+                    reject(new Error(`Request foto timeout setelah ${Math.round(timeoutMs / 1000)} detik`));
+                }, timeoutMs);
+            });
+
+            return Promise.race([request, timeout]).finally(() => {
+                if (timeoutId) clearTimeout(timeoutId);
+            }).catch(err => {
+                if (err?.name === 'AbortError') {
+                    throw new Error(`Request foto timeout setelah ${Math.round(timeoutMs / 1000)} detik`);
+                }
+                throw err;
+            });
+        }
+
+        function isRetryableReportPhotoError(error) {
+            const status = Number(error?.status || 0);
+            return !status || status === 408 || status === 425 || status === 429 || status >= 500;
+        }
+
+        function waitForReportPhotoRetry(delayMs = REPORT_PHOTO_RETRY_DELAY_MS) {
+            return new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+
+        async function fetchReportPhotoRequestWithRetry(url, options = {}, timeoutMs = REPORT_PHOTO_REQUEST_TIMEOUT_MS, maxAttempts = REPORT_PHOTO_REQUEST_MAX_ATTEMPTS) {
+            let lastError = null;
+            const attempts = Math.max(1, Number(maxAttempts) || REPORT_PHOTO_REQUEST_MAX_ATTEMPTS);
+
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                    return await fetchReportPhotoRequest(url, options, timeoutMs);
+                } catch (error) {
+                    lastError = error;
+                    const canRetry = attempt < attempts && isRetryableReportPhotoError(error);
+                    if (!canRetry) throw error;
+                    await waitForReportPhotoRetry();
+                }
+            }
+
+            throw lastError || new Error('Request foto gagal tanpa detail error');
+        }
+
         function splitInspectionCaption(caption = '', fallback = '') {
             const raw = String(caption || fallback || '').trim();
             if (!raw) return { itemName: 'Foto', extra: '' };
@@ -2257,6 +2323,71 @@ async function restoreOfflineDraft(options = {}) {
             });
         }
 
+        function bindReportPhotoRetryEvents() {
+            document.querySelectorAll('[data-report-photo-retry="true"]').forEach(button => {
+                syncReportPhotoRetryState(button.closest('.report-photo-card'));
+                if (button.dataset.retryBound === 'true') return;
+                button.dataset.retryBound = 'true';
+                button.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    retryReportPhoto(button);
+                });
+            });
+        }
+
+        function syncReportPhotoRetryState(card) {
+            if (!card) return;
+            const img = card.querySelector('img[data-report-drive-file-id]');
+            const retry = card.querySelector('[data-report-photo-retry="true"]');
+            const fallback = card.querySelector('[data-photo-fallback="true"]');
+            const fileId = img?.dataset?.reportDriveFileId || retry?.dataset?.reportDriveFileId || '';
+            if (!retry || !fileId) return;
+
+            const failed = img?.dataset?.reportPhotoFailed === 'true' ||
+                (img && img.style.display === 'none' && fallback?.style.display !== 'none');
+            retry.disabled = false;
+            retry.style.opacity = '1';
+            retry.style.display = failed ? 'inline-flex' : 'none';
+        }
+
+        async function retryReportPhoto(button) {
+            const card = button?.closest?.('.report-photo-card');
+            const img = card?.querySelector?.('img[data-report-drive-file-id]');
+            const fileId = img?.dataset?.reportDriveFileId || button?.dataset?.reportDriveFileId || '';
+            const loading = card?.querySelector?.('[data-photo-loading="true"]');
+            const fallback = card?.querySelector?.('[data-photo-fallback="true"]');
+            if (!img || !fileId) return;
+
+            button.disabled = true;
+            button.style.opacity = '0.55';
+            img.dataset.reportPhotoFailed = 'false';
+            if (loading) loading.style.display = 'flex';
+            if (fallback) fallback.style.display = 'none';
+
+            try {
+                const dataUrl = await fetchReportPhotoDataUrl(fileId);
+                img.src = dataUrl;
+                img.style.display = 'block';
+                img.dataset.reportDataLoaded = 'true';
+                img.removeAttribute('data-report-photo-failed');
+                card.setAttribute('data-photo-ready', 'true');
+                if (loading) loading.style.display = 'none';
+                if (fallback) fallback.style.display = 'none';
+                button.style.display = 'none';
+            } catch (err) {
+                console.warn('Retry foto report gagal:', fileId, err?.message || err);
+                img.dataset.reportPhotoFailed = 'true';
+                img.removeAttribute('src');
+                img.style.display = 'none';
+                if (loading) loading.style.display = 'none';
+                if (fallback) fallback.style.display = 'flex';
+                button.disabled = false;
+                button.style.opacity = '1';
+                button.style.display = 'inline-flex';
+            }
+        }
+
         function buildReportPhotoHtml(photo, index = 0, caption = '') {
             const localSrc = getPhotoSrc(photo);
             const fileId = getPhotoFileId(photo);
@@ -2266,11 +2397,14 @@ async function restoreOfflineDraft(options = {}) {
             const captionHtml = buildCaptionHtml(label, `Foto ${index + 1}`);
 
             const canUseDirectSrc = localSrc && !fileId;
+            const thumbnailSrc = fileId ? buildDriveThumbnailUrlFromFileId(fileId, 800) : '';
             const imgAttr = canUseDirectSrc
                 ? `src="${escapeAttr(localSrc)}"`
-                : `src="" data-report-drive-file-id="${escapeAttr(fileId)}" data-report-photo-label="${safeAttrLabel}"`;
-            const showImage = canUseDirectSrc;
-            const showLoading = fileId && !canUseDirectSrc;
+                : fileId
+                    ? `src="${escapeAttr(thumbnailSrc)}" data-report-drive-file-id="${escapeAttr(fileId)}" data-report-fallback-src="${escapeAttr(thumbnailSrc)}" data-report-photo-label="${safeAttrLabel}"`
+                    : `src="" data-report-photo-label="${safeAttrLabel}"`;
+            const showImage = canUseDirectSrc || Boolean(thumbnailSrc);
+            const showLoading = fileId && !canUseDirectSrc && !thumbnailSrc;
             const showFallback = !fileId && !canUseDirectSrc;
 
             return `
@@ -2287,6 +2421,9 @@ async function restoreOfflineDraft(options = {}) {
                             <span>${safeLabel}</span>
                             <span style="font-size:11px;font-weight:650;color:#64748b;">Foto belum tersedia untuk preview</span>
                         </div>
+                    </button>
+                    <button type="button" data-report-photo-retry="true" data-report-drive-file-id="${escapeAttr(fileId)}" style="display:${showFallback ? 'inline-flex' : 'none'};align-items:center;justify-content:center;gap:6px;margin:10px auto 0;padding:8px 14px;border:1px solid #93c5fd;border-radius:9px;background:#eff6ff;color:#1d4ed8;font-size:12px;font-weight:800;cursor:pointer;">
+                        ↻ Coba lagi
                     </button>
                     <div style="padding:10px 12px;border-top:1px solid #e5e7eb;line-height:1.35;font-size:12px;">
                         ${captionHtml}
@@ -2323,14 +2460,19 @@ async function restoreOfflineDraft(options = {}) {
             return canvas.toDataURL('image/jpeg', 0.86);
         }
 
-        async function fetchReportPhotoDataUrl(fileId) {
+        async function fetchReportPhotoDataUrl(fileId, options = {}) {
             if (!fileId) throw new Error('fileId kosong');
             if (REPORT_PHOTO_CACHE.has(fileId)) return REPORT_PHOTO_CACHE.get(fileId);
 
             const proxyUrl = getGasImageProxyUrl(fileId);
             if (!proxyUrl) throw new Error('GAS_UPLOAD_URL belum tersedia');
 
-            const response = await fetch(proxyUrl, { method: 'GET' });
+            const response = await fetchReportPhotoRequestWithRetry(
+                proxyUrl,
+                { method: 'GET' },
+                Number(options.timeoutMs) || REPORT_PHOTO_REQUEST_TIMEOUT_MS,
+                Number(options.maxAttempts) || REPORT_PHOTO_REQUEST_MAX_ATTEMPTS
+            );
             const text = await response.text();
             let result = null;
             try {
@@ -2347,6 +2489,14 @@ async function restoreOfflineDraft(options = {}) {
             REPORT_PHOTO_CACHE.set(fileId, finalDataUrl);
             return finalDataUrl;
         }
+
+        // Dipakai oleh renderer PDF agar foto Drive tidak masuk sebagai URL
+        // lintas-domain yang bisa gagal ditangkap karena batasan CORS.
+        window.__LIAN_REPORT_PHOTO_FETCHER_V1 = fetchReportPhotoDataUrl;
+        window.__LIAN_REPORT_PHOTO_FAST_FETCHER_V1 = fileId => fetchReportPhotoDataUrl(fileId, {
+            timeoutMs: 8000,
+            maxAttempts: 1
+        });
 
         const REPORT_PHOTO_BATCH_SIZE = 6;
         const REPORT_PHOTO_BATCH_CONCURRENCY = 2;
@@ -2368,7 +2518,7 @@ async function restoreOfflineDraft(options = {}) {
                 throw new Error('GAS_UPLOAD_URL belum tersedia');
             }
 
-            const response = await fetch(GAS_UPLOAD_URL, {
+            const response = await fetchReportPhotoRequestWithRetry(GAS_UPLOAD_URL, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'text/plain;charset=utf-8'
@@ -2406,10 +2556,15 @@ async function restoreOfflineDraft(options = {}) {
             return { ok: true, loaded };
         }
 
+        // Export PDF memakai batch yang sama dengan loader thumbnail agar tidak
+        // meminta puluhan foto satu per satu ketika cache preview belum terisi.
+        window.__LIAN_REPORT_PHOTO_BATCH_FETCHER_V1 = fetchReportPhotoBatchDataUrls;
+
         async function hydrateSingleReportPhoto(img) {
             const fileId = img.dataset.reportDriveFileId;
             const loading = img.parentElement?.querySelector('[data-photo-loading="true"]');
             const fallback = img.parentElement?.querySelector('[data-photo-fallback="true"]');
+            const fallbackSrc = img.dataset.reportFallbackSrc || '';
 
             if (!fileId) {
                 if (loading) loading.style.display = 'none';
@@ -2421,15 +2576,60 @@ async function restoreOfflineDraft(options = {}) {
                 const dataUrl = await fetchReportPhotoDataUrl(fileId);
                 img.src = dataUrl;
                 img.style.display = 'block';
+                img.dataset.reportDataLoaded = 'true';
+                img.removeAttribute('data-report-photo-failed');
                 img.closest('.report-photo-card')?.setAttribute('data-photo-ready', 'true');
                 if (loading) loading.style.display = 'none';
                 if (fallback) fallback.style.display = 'none';
+                img.closest('.report-photo-card')?.querySelector('[data-report-photo-retry="true"]')?.style.setProperty('display', 'none');
             } catch (err) {
                 console.warn('⚠️ Foto report gagal dimuat:', fileId, err?.message || err);
-                img.removeAttribute('src');
+                const thumbnailLoaded = fallbackSrc && img.complete && img.naturalWidth > 0;
+                img.dataset.reportPhotoFailed = thumbnailLoaded ? 'false' : 'true';
+                if (thumbnailLoaded) {
+                    img.style.display = 'block';
+                } else {
+                    img.removeAttribute('src');
+                    img.style.display = 'none';
+                }
+                if (loading) loading.style.display = 'none';
+                if (fallback) fallback.style.display = thumbnailLoaded ? 'none' : 'flex';
+                const retry = img.closest('.report-photo-card')?.querySelector('[data-report-photo-retry="true"]');
+                if (retry) {
+                    retry.disabled = false;
+                    retry.style.opacity = '1';
+                    retry.style.display = thumbnailLoaded ? 'none' : 'inline-flex';
+                }
+            }
+        }
+
+        function bindReportPhotoThumbnailFallback(img) {
+            if (!img || img.dataset.thumbnailFallbackBound === 'true') return;
+            img.dataset.thumbnailFallbackBound = 'true';
+            img.addEventListener('error', () => {
+                if (img.dataset.reportDataLoaded === 'true') return;
+                const loading = img.parentElement?.querySelector('[data-photo-loading="true"]');
+                const fallback = img.parentElement?.querySelector('[data-photo-fallback="true"]');
+                const retry = img.closest('.report-photo-card')?.querySelector('[data-report-photo-retry="true"]');
+                img.dataset.reportPhotoFailed = 'true';
                 img.style.display = 'none';
                 if (loading) loading.style.display = 'none';
                 if (fallback) fallback.style.display = 'flex';
+                if (retry) {
+                    retry.disabled = false;
+                    retry.style.opacity = '1';
+                    retry.style.display = 'inline-flex';
+                }
+            });
+
+            // Error dapat terjadi sebelum listener terpasang, terutama pada WebView.
+            // Sinkronkan ulang status agar tombol retry tetap muncul.
+            if (img.getAttribute('src') && img.complete && img.naturalWidth === 0) {
+                img.dataset.reportPhotoFailed = 'true';
+                img.style.display = 'none';
+                const fallback = img.parentElement?.querySelector('[data-photo-fallback="true"]');
+                if (fallback) fallback.style.display = 'flex';
+                syncReportPhotoRetryState(img.closest('.report-photo-card'));
             }
         }
 
@@ -2451,27 +2651,33 @@ async function restoreOfflineDraft(options = {}) {
             const images = Array.from(reportContent.querySelectorAll('img[data-report-drive-file-id]'));
             if (images.length === 0) return;
 
-            const uniqueFileIds = [...new Set(images
-                .map(img => img.dataset.reportDriveFileId)
-                .filter(Boolean))];
-            const missingFileIds = uniqueFileIds.filter(fileId => !REPORT_PHOTO_CACHE.has(fileId));
+            images.forEach(bindReportPhotoThumbnailFallback);
+            try { window.LianReportPdf?.refreshPhotoReadiness?.(); } catch (_) {}
 
-            console.log(`📷 Load foto laporan: ${images.length} foto, ${missingFileIds.length} belum cache`);
+            // Thumbnail dipakai langsung untuk preview. Pengambilan data foto
+            // penuh ditunda sampai export PDF agar halaman laporan tidak
+            // menunggu puluhan download GAS yang tidak diperlukan untuk preview.
+            const imagesWithoutSource = images.filter(img => {
+                return !String(img.getAttribute('src') || img.src || '').trim();
+            });
+            images.forEach(img => {
+                const source = String(img.getAttribute('src') || img.src || '').trim();
+                if (!source) return;
+                const card = img.closest('.report-photo-card');
+                const loading = card?.querySelector('[data-photo-loading="true"]');
+                const fallback = card?.querySelector('[data-photo-fallback="true"]');
+                if (loading) loading.style.display = 'none';
+                if (fallback) fallback.style.display = 'none';
+                card?.setAttribute('data-photo-ready', 'thumbnail');
+            });
 
-            if (missingFileIds.length > 0) {
-                const chunks = chunkArray(missingFileIds, REPORT_PHOTO_BATCH_SIZE);
-                try {
-                    await runWithConcurrency(chunks, REPORT_PHOTO_BATCH_CONCURRENCY, async (chunk) => {
-                        await fetchReportPhotoBatchDataUrls(chunk);
-                    });
-                } catch (err) {
-                    console.warn('Batch foto gagal, fallback single request:', err?.message || err);
-                }
+            if (imagesWithoutSource.length > 0) {
+                await runWithConcurrency(imagesWithoutSource, 4, hydrateSingleReportPhoto);
             }
-
-            await runWithConcurrency(images, 4, hydrateSingleReportPhoto);
             bindReportPhotoPreviewEvents();
-            console.log('✅ Foto laporan selesai');
+            bindReportPhotoRetryEvents();
+            try { window.LianReportPdf?.refreshPhotoReadiness?.(); } catch (_) {}
+            console.log(`✅ Thumbnail foto laporan tampil tanpa menunggu data penuh: ${images.length} foto`);
         }
 
         function readFileAsDataUrl(file) {
@@ -4541,6 +4747,7 @@ async function restoreOfflineDraft(options = {}) {
             document.body.style.overflow = 'hidden';
 
             attachReportEventListeners();
+            bindReportPhotoRetryEvents();
             lucide.createIcons();
             setTimeout(() => hydrateReportDrivePhotos(), 80);
             showToast('✓ Laporan ditampilkan!');
@@ -7645,28 +7852,33 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 (function () {
     const TAG = '[pdf connector v69]';
     const PDF_SCRIPT_ID = 'lian-report-pdf-v69-script';
-    const PDF_SCRIPT_SRC = 'js/report-pdf.js';
+    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-11';
+    const EXPECTED_PDF_VERSION = 'v111-clear-photo-retry-export-pdf';
 
     function loadReportPdfModuleV69() {
         return new Promise((resolve, reject) => {
             try {
-                if (window.LianReportPdf?.exportPdf) {
+                if (window.LianReportPdf?.version === EXPECTED_PDF_VERSION) {
                     resolve(window.LianReportPdf);
                     return;
                 }
 
                 const existing = document.getElementById(PDF_SCRIPT_ID);
                 if (existing) {
-                    existing.addEventListener('load', () => resolve(window.LianReportPdf), { once: true });
-                    existing.addEventListener('error', () => reject(new Error('Gagal memuat modul PDF.')), { once: true });
-                    return;
+                    existing.remove();
                 }
 
                 const script = document.createElement('script');
                 script.id = PDF_SCRIPT_ID;
                 script.src = PDF_SCRIPT_SRC;
                 script.async = true;
-                script.onload = () => resolve(window.LianReportPdf);
+                script.onload = () => {
+                    if (window.LianReportPdf?.version !== EXPECTED_PDF_VERSION) {
+                        reject(new Error('Modul PDF yang dimuat bukan versi terbaru.'));
+                        return;
+                    }
+                    resolve(window.LianReportPdf);
+                };
                 script.onerror = () => reject(new Error('Gagal memuat js/report-pdf.js. Pastikan file sudah ada di folder js/.'));
                 document.head.appendChild(script);
             } catch (err) {
