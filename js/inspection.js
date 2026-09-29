@@ -7930,8 +7930,8 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 (function () {
     const TAG = '[pdf connector v69]';
     const PDF_SCRIPT_ID = 'lian-report-pdf-v69-script';
-    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-17';
-    const EXPECTED_PDF_VERSION = 'v112-preview-only-export-pdf';
+    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-18';
+    const EXPECTED_PDF_VERSION = 'v113-portrait-photos';
 
     function loadReportPdfModuleV69() {
         return new Promise((resolve, reject) => {

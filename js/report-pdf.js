@@ -10,7 +10,7 @@
 (function () {
     'use strict';
 
-    const TAG = '[report-pdf v112-preview-only]';
+    const TAG = '[report-pdf v113-portrait-photos]';
     const JSPDF_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
     const HTML2CANVAS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
     const LIBRARY_LOAD_TIMEOUT_MS = 20000;
@@ -200,10 +200,10 @@
             }
             .lian-pdf-export-sandbox-v84 .report-photo-card img {
                 width: 100% !important;
-                height: auto !important;
+                height: 480px !important;
                 min-height: 0 !important;
-                max-height: none !important;
-                aspect-ratio: auto !important;
+                max-height: 480px !important;
+                aspect-ratio: 4 / 5 !important;
                 object-fit: contain !important;
                 object-position: center center !important;
                 display: block !important;
@@ -683,6 +683,52 @@
         return waitForImageReady(img, timeout);
     }
 
+    function rotateLandscapeDataUrlToPortrait(dataUrl) {
+        const source = String(dataUrl || '').trim();
+        if (!source.startsWith('data:image/')) return Promise.resolve(source);
+
+        return new Promise(resolve => {
+            const image = new Image();
+            image.onload = () => {
+                const sourceWidth = Number(image.naturalWidth || image.width || 0);
+                const sourceHeight = Number(image.naturalHeight || image.height || 0);
+
+                if (!sourceWidth || !sourceHeight || sourceWidth <= sourceHeight * 1.05) {
+                    resolve(source);
+                    return;
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = sourceHeight;
+                canvas.height = sourceWidth;
+
+                try {
+                    const context = canvas.getContext('2d', { alpha: false });
+                    context.fillStyle = '#ffffff';
+                    context.fillRect(0, 0, canvas.width, canvas.height);
+                    context.translate(canvas.width / 2, canvas.height / 2);
+                    context.rotate(Math.PI / 2);
+                    context.drawImage(
+                        image,
+                        -sourceWidth / 2,
+                        -sourceHeight / 2,
+                        sourceWidth,
+                        sourceHeight
+                    );
+                    resolve(canvas.toDataURL('image/jpeg', 0.92));
+                } catch (error) {
+                    console.warn(TAG, 'Rotasi foto landscape dilewati:', error?.message || error);
+                    resolve(source);
+                } finally {
+                    canvas.width = 1;
+                    canvas.height = 1;
+                }
+            };
+            image.onerror = () => resolve(source);
+            image.src = source;
+        });
+    }
+
     async function waitForImages(root, timeout = 8000) {
         const images = Array.from(root.querySelectorAll('img'))
             .filter(img => String(img.getAttribute('src') || img.src || '').trim());
@@ -865,11 +911,30 @@
                     }
                 }
 
-                const isReady = String(source || '').startsWith('data:image/')
-                    ? await setExportImageSource(img, source, 12000)
+                let orientedSource = String(source || '');
+                if (orientedSource.startsWith('data:image/')) {
+                    orientedSource = await rotateLandscapeDataUrlToPortrait(orientedSource);
+                }
+
+                const isReady = orientedSource.startsWith('data:image/')
+                    ? await setExportImageSource(img, orientedSource, 12000)
                     : false;
 
-                if (isReady) {
+                let finalReady = isReady;
+                if (!finalReady && fileId && typeof thumbnailFetcher === 'function') {
+                    // Retry hanya untuk foto yang sudah mendapat data tetapi
+                    // gagal di-decode oleh perangkat mobile.
+                    thumbnailCache?.delete?.(fileId);
+                    try {
+                        const retrySource = await thumbnailFetcher(fileId);
+                        const orientedRetrySource = await rotateLandscapeDataUrlToPortrait(retrySource);
+                        finalReady = await setExportImageSource(img, orientedRetrySource, 12000);
+                    } catch (error) {
+                        console.warn(TAG, 'Retry decode thumbnail gagal:', error?.message || error);
+                    }
+                }
+
+                if (finalReady) {
                     img.dataset.reportPhotoFailed = 'false';
                     img.dataset.reportDataLoaded = 'true';
                     available += 1;
@@ -901,7 +966,7 @@
                     } catch (error) {
                         console.warn(TAG, 'Batch thumbnail gagal, dicoba satu per satu:', error?.message || error);
                     }
-                    await Promise.all(chunk.map(applyThumbnailToImage));
+                    await runWithConcurrency(chunk, 2, applyThumbnailToImage);
                 });
             } else {
                 await runWithConcurrency(images, 2, applyThumbnailToImage);
@@ -1273,17 +1338,18 @@
         });
 
         // Pastikan tidak ada lazy image yang belum kebaca.
-        // Penting: foto dokumentasi kendaraan tidak boleh di-stretch/crop paksa.
+        // Foto dokumentasi memakai frame portrait seragam. `contain` menjaga
+        // seluruh isi foto tetap terlihat tanpa diputar atau dipotong.
         clone.querySelectorAll('img').forEach(img => {
             img.setAttribute('loading', 'eager');
             img.style.setProperty('max-width', '100%', 'important');
         });
         clone.querySelectorAll('.report-photo-card img').forEach(img => {
             img.style.setProperty('width', '100%', 'important');
-            img.style.setProperty('height', 'auto', 'important');
+            img.style.setProperty('height', '480px', 'important');
             img.style.setProperty('min-height', '0', 'important');
-            img.style.setProperty('max-height', 'none', 'important');
-            img.style.setProperty('aspect-ratio', 'auto', 'important');
+            img.style.setProperty('max-height', '480px', 'important');
+            img.style.setProperty('aspect-ratio', '4 / 5', 'important');
             img.style.setProperty('object-fit', 'contain', 'important');
             img.style.setProperty('object-position', 'center center', 'important');
             if (img.dataset.reportPhotoFailed === 'true') {
@@ -1967,7 +2033,7 @@
         configureButtons,
         refreshPhotoReadiness,
         getFileName,
-        version: 'v112-preview-only-export-pdf'
+        version: 'v113-portrait-photos'
     };
 
     ensureUiStyle();
