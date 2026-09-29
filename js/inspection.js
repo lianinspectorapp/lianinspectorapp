@@ -2128,6 +2128,7 @@ async function restoreOfflineDraft(options = {}) {
         }
 
         const REPORT_PHOTO_CACHE = window.__REPORT_PHOTO_CACHE || (window.__REPORT_PHOTO_CACHE = new Map());
+        const REPORT_PHOTO_THUMBNAIL_CACHE = window.__REPORT_PHOTO_THUMBNAIL_CACHE || (window.__REPORT_PHOTO_THUMBNAIL_CACHE = new Map());
 
         function openReportPhotoPreview(src, label = 'Foto Dokumentasi') {
             const finalSrc = String(src || '').trim();
@@ -2492,6 +2493,9 @@ async function restoreOfflineDraft(options = {}) {
 
         async function fetchReportPhotoThumbnailDataUrl(fileId) {
             if (!fileId) throw new Error('fileId kosong');
+            if (REPORT_PHOTO_THUMBNAIL_CACHE.has(fileId)) {
+                return REPORT_PHOTO_THUMBNAIL_CACHE.get(fileId);
+            }
             if (typeof GAS_UPLOAD_URL === 'undefined' || !GAS_UPLOAD_URL) {
                 throw new Error('GAS_UPLOAD_URL belum tersedia');
             }
@@ -2515,13 +2519,63 @@ async function restoreOfflineDraft(options = {}) {
             if (!result.success || !String(result.dataUrl || '').startsWith('data:image/')) {
                 throw new Error(result.error || 'GAS tidak mengembalikan thumbnail data URL');
             }
+            REPORT_PHOTO_THUMBNAIL_CACHE.set(fileId, result.dataUrl);
             return result.dataUrl;
+        }
+
+        async function fetchReportPhotoThumbnailBatchDataUrls(fileIds = []) {
+            const uniqueIds = [...new Set((fileIds || []).filter(Boolean))]
+                .filter(fileId => !REPORT_PHOTO_THUMBNAIL_CACHE.has(fileId));
+
+            if (uniqueIds.length === 0) {
+                return { ok: true, loaded: 0 };
+            }
+
+            if (typeof GAS_UPLOAD_URL === 'undefined' || !GAS_UPLOAD_URL) {
+                throw new Error('GAS_UPLOAD_URL belum tersedia');
+            }
+
+            const separator = GAS_UPLOAD_URL.includes('?') ? '&' : '?';
+            const query = uniqueIds
+                .map(fileId => encodeURIComponent(fileId))
+                .join(',');
+            const batchUrl = `${GAS_UPLOAD_URL}${separator}action=getImages&fileIds=${query}`;
+            const response = await fetchReportPhotoRequestWithRetry(
+                batchUrl,
+                { method: 'GET' },
+                20000,
+                2
+            );
+
+            const text = await response.text();
+            let result = null;
+            try {
+                result = JSON.parse(text);
+            } catch (_) {
+                throw new Error('Response thumbnail batch GAS bukan JSON valid');
+            }
+
+            if (!result.success || !Array.isArray(result.images)) {
+                throw new Error(result.error || 'GAS thumbnail batch tidak mengembalikan images');
+            }
+
+            let loaded = 0;
+            result.images.forEach(image => {
+                if (!image?.fileId || !image.success) return;
+                if (!String(image.dataUrl || '').startsWith('data:image/')) return;
+                REPORT_PHOTO_THUMBNAIL_CACHE.set(image.fileId, image.dataUrl);
+                loaded += 1;
+            });
+
+            return { ok: true, loaded };
         }
 
         // Dipakai oleh renderer PDF agar foto Drive tidak masuk sebagai URL
         // lintas-domain yang bisa gagal ditangkap karena batasan CORS.
         window.__LIAN_REPORT_PHOTO_FETCHER_V1 = fetchReportPhotoDataUrl;
         window.__LIAN_REPORT_PHOTO_THUMBNAIL_FETCHER_V1 = fetchReportPhotoThumbnailDataUrl;
+        window.__LIAN_REPORT_PHOTO_THUMBNAIL_BATCH_FETCHER_V1 = fetchReportPhotoThumbnailBatchDataUrls;
+        window.__LIAN_REPORT_PHOTO_THUMBNAIL_CACHE_V1 = REPORT_PHOTO_THUMBNAIL_CACHE;
         window.__LIAN_REPORT_PHOTO_FAST_FETCHER_V1 = fileId => fetchReportPhotoDataUrl(fileId, {
             timeoutMs: 8000,
             maxAttempts: 1
@@ -2684,9 +2738,9 @@ async function restoreOfflineDraft(options = {}) {
             images.forEach(bindReportPhotoThumbnailFallback);
             try { window.LianReportPdf?.refreshPhotoReadiness?.(); } catch (_) {}
 
-            // Thumbnail langsung dipakai untuk tampilan. Data foto penuh tetap
-            // dipanaskan di cache secara background agar export tidak memulai
-            // 24 request berat sekaligus ketika tombol PDF ditekan.
+            // Thumbnail langsung dipakai untuk tampilan. Foto penuh tidak lagi
+            // dipanaskan di background karena PDF memakai thumbnail dan proses
+            // tersebut membebani jaringan serta memori perangkat mobile.
             images.forEach(img => {
                 const source = String(img.getAttribute('src') || img.src || '').trim();
                 if (!source) return;
@@ -2698,15 +2752,10 @@ async function restoreOfflineDraft(options = {}) {
                 card?.setAttribute('data-photo-ready', 'thumbnail');
             });
 
-            if (images.length > 0) {
-                await runWithConcurrency(images, 4, img => hydrateSingleReportPhoto(img, {
-                    keepThumbnail: true
-                }));
-            }
             bindReportPhotoPreviewEvents();
             bindReportPhotoRetryEvents();
             try { window.LianReportPdf?.refreshPhotoReadiness?.(); } catch (_) {}
-            console.log(`✅ Thumbnail tampil; cache foto penuh dipanaskan di background: ${images.length} foto`);
+            console.log(`✅ Thumbnail tampil; foto penuh diambil hanya bila benar-benar diperlukan: ${images.length} foto`);
         }
 
         function readFileAsDataUrl(file) {
@@ -7881,7 +7930,7 @@ console.log('✅ inspection.js v30 batch photo report loaded');
 (function () {
     const TAG = '[pdf connector v69]';
     const PDF_SCRIPT_ID = 'lian-report-pdf-v69-script';
-    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-16';
+    const PDF_SCRIPT_SRC = 'js/report-pdf.js?v=20260930-17';
     const EXPECTED_PDF_VERSION = 'v112-preview-only-export-pdf';
 
     function loadReportPdfModuleV69() {

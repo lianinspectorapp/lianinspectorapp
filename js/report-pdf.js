@@ -637,21 +637,59 @@
             extractGoogleDriveFileId(img.getAttribute('data-src') || '');
     }
 
+    function waitForImageReady(img, timeout = 10000) {
+        return new Promise(resolve => {
+            if (!img) {
+                resolve(false);
+                return;
+            }
+
+            let settled = false;
+            let timer = null;
+
+            const finish = ready => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                img.removeEventListener('load', onLoad);
+                img.removeEventListener('error', onError);
+                resolve(Boolean(ready));
+            };
+
+            const onLoad = () => {
+                if (typeof img.decode === 'function') {
+                    img.decode().then(() => finish(true)).catch(() => finish(img.naturalWidth > 0));
+                    return;
+                }
+                finish(img.naturalWidth > 0);
+            };
+
+            const onError = () => finish(false);
+            img.addEventListener('load', onLoad, { once: true });
+            img.addEventListener('error', onError, { once: true });
+            timer = setTimeout(() => finish(img.complete && img.naturalWidth > 0), timeout);
+
+            if (img.complete && img.naturalWidth > 0) {
+                onLoad();
+            }
+        });
+    }
+
+    async function setExportImageSource(img, source, timeout = 10000) {
+        const value = String(source || '').trim();
+        if (!img || !value) return false;
+        img.src = value;
+        img.style.display = 'block';
+        return waitForImageReady(img, timeout);
+    }
+
     async function waitForImages(root, timeout = 8000) {
         const images = Array.from(root.querySelectorAll('img'))
             .filter(img => String(img.getAttribute('src') || img.src || '').trim());
         if (images.length === 0) return;
 
         await Promise.race([
-            Promise.all(images.map(img => {
-                if (img.complete && img.naturalWidth > 0) return Promise.resolve(true);
-                return new Promise(resolve => {
-                    const done = () => resolve(true);
-                    img.addEventListener('load', done, { once: true });
-                    img.addEventListener('error', done, { once: true });
-                    setTimeout(done, 3000);
-                });
-            })),
+            Promise.all(images.map(img => waitForImageReady(img, Math.min(timeout, 10000)))),
             new Promise(resolve => setTimeout(resolve, timeout))
         ]);
     }
@@ -720,6 +758,7 @@
             const optimized = await downsampleExportPhoto(source, 900);
             if (optimized && optimized !== source) {
                 img.src = optimized;
+                await waitForImageReady(img, 12000);
                 reduced += 1;
             }
         });
@@ -790,35 +829,56 @@
         // Foto PDF mengikuti sumber yang sudah tampil di preview. Ini menjaga
         // export tetap ringan dan mencegah request ulang blob/base64 besar ke GAS.
         if (CFG.previewPhotosOnly) {
+            const thumbnailBatchFetcher = window.__LIAN_REPORT_PHOTO_THUMBNAIL_BATCH_FETCHER_V1;
             const thumbnailFetcher = window.__LIAN_REPORT_PHOTO_THUMBNAIL_FETCHER_V1;
+            const thumbnailCache = window.__LIAN_REPORT_PHOTO_THUMBNAIL_CACHE_V1;
             let completed = 0;
             let available = 0;
-            await runWithConcurrency(images, 4, async img => {
+
+            const markPreviewUnavailable = img => {
+                img.dataset.reportPhotoFailed = 'true';
+                img.removeAttribute('src');
+                img.style.display = 'none';
+            };
+
+            const applyThumbnailToImage = async img => {
                 const previewSource = String(
                     img.dataset.reportFallbackSrc ||
                     img.getAttribute('src') ||
                     img.src ||
                     ''
                 ).trim();
+                const fileId = getImageFileId(img);
+                let source = fileId && thumbnailCache?.get?.(fileId)
+                    ? thumbnailCache.get(fileId)
+                    : '';
 
-                if (previewSource) {
-                    img.src = previewSource;
-                    img.style.display = 'block';
-                    img.dataset.reportPhotoFailed = 'false';
-
-                    const fileId = getImageFileId(img);
-                    if (fileId && typeof thumbnailFetcher === 'function') {
-                        try {
-                            const thumbnailDataUrl = await thumbnailFetcher(fileId);
-                            if (String(thumbnailDataUrl || '').startsWith('data:image/')) {
-                                img.src = thumbnailDataUrl;
-                            }
-                        } catch (error) {
-                            console.warn(TAG, 'Proxy thumbnail tidak tersedia, memakai URL preview:', error?.message || error);
-                        }
-                    }
-                    available += 1;
+                if (!source && previewSource.startsWith('data:image/')) {
+                    source = previewSource;
                 }
+
+                if (!source && fileId && typeof thumbnailFetcher === 'function') {
+                    try {
+                        source = await thumbnailFetcher(fileId);
+                    } catch (error) {
+                        console.warn(TAG, 'Proxy thumbnail tidak tersedia:', error?.message || error);
+                    }
+                }
+
+                const isReady = String(source || '').startsWith('data:image/')
+                    ? await setExportImageSource(img, source, 12000)
+                    : false;
+
+                if (isReady) {
+                    img.dataset.reportPhotoFailed = 'false';
+                    img.dataset.reportDataLoaded = 'true';
+                    available += 1;
+                } else {
+                    // URL Drive lintas-domain hanya aman untuk preview layar,
+                    // tetapi tidak dapat dijamin tertangkap html2canvas.
+                    markPreviewUnavailable(img);
+                }
+
                 completed += 1;
                 updateOverlay(
                     `Menyiapkan foto (${completed}/${images.length})...`,
@@ -826,7 +886,26 @@
                     20 + ((completed / Math.max(1, images.length)) * 38),
                     false
                 );
-            });
+            };
+
+            const chunks = [];
+            for (let index = 0; index < images.length; index += 4) {
+                chunks.push(images.slice(index, index + 4));
+            }
+
+            if (typeof thumbnailBatchFetcher === 'function') {
+                await runWithConcurrency(chunks, 1, async chunk => {
+                    const ids = chunk.map(getImageFileId).filter(Boolean);
+                    try {
+                        await thumbnailBatchFetcher(ids);
+                    } catch (error) {
+                        console.warn(TAG, 'Batch thumbnail gagal, dicoba satu per satu:', error?.message || error);
+                    }
+                    await Promise.all(chunk.map(applyThumbnailToImage));
+                });
+            } else {
+                await runWithConcurrency(images, 2, applyThumbnailToImage);
+            }
 
             updateOverlay(
                 `Menggunakan ${available}/${images.length} foto dari preview...`,
@@ -1422,15 +1501,25 @@
             1
         );
         const heightPx = Math.ceil(measuredHeight + Math.max(0, CFG.footerSafeExtraPx || 0));
+        const constrainedDevice = typeof navigator !== 'undefined' && (
+            /Android|iPhone|iPad|iPod|Mobile|wv/i.test(navigator.userAgent || '') ||
+            Number(navigator.deviceMemory || 0) > 0 && Number(navigator.deviceMemory) <= 4
+        );
         const requestedScale = exportFallbackMode
             ? 1
-            : (Number(CFG.canvasScale) > 0 ? Number(CFG.canvasScale) : 1);
+            : constrainedDevice
+                ? Math.min(1, Number(CFG.canvasScale) > 0 ? Number(CFG.canvasScale) : 1)
+                : (Number(CFG.canvasScale) > 0 ? Number(CFG.canvasScale) : 1);
         const maxPixels = exportFallbackMode
             ? 8000000
-            : Math.max(1000000, Number(CFG.maxCanvasPixels) || 8000000);
+            : constrainedDevice
+                ? Math.min(8000000, Math.max(1000000, Number(CFG.maxCanvasPixels) || 8000000))
+                : Math.max(1000000, Number(CFG.maxCanvasPixels) || 8000000);
         const maxCanvasHeight = exportFallbackMode
             ? 20000
-            : Math.max(6000, Number(CFG.maxCanvasHeightPx) || 24000);
+            : constrainedDevice
+                ? Math.min(20000, Math.max(6000, Number(CFG.maxCanvasHeightPx) || 24000))
+                : Math.max(6000, Number(CFG.maxCanvasHeightPx) || 24000);
         const maxScaleByPixels = Math.sqrt(maxPixels / Math.max(1, widthPx * heightPx));
         const maxScaleByHeight = maxCanvasHeight / Math.max(1, heightPx);
         const renderScale = Math.max(
@@ -1441,7 +1530,8 @@
         console.info(TAG, 'Single-pass high-resolution canvas render:', {
             widthPx,
             heightPx,
-            renderScale: Number(renderScale.toFixed(3))
+            renderScale: Number(renderScale.toFixed(3)),
+            constrainedDevice
         });
 
         return { widthPx, heightPx, renderScale };
